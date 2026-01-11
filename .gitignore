@@ -27,3 +27,5 @@ Thumbs.db
 
 # Project specific
 *.log
+LOCAL_NOTES.md
+.secrets
