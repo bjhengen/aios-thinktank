@@ -72,19 +72,31 @@ REASONING: <brief explanation of why you chose this action>
         if include_examples:
             prompt += """
 EXAMPLE COMMANDS:
-- Forward: COMMAND: 200,200,1,1
-- Backward: COMMAND: 200,200,0,0
-- Rotate left (turn in place): COMMAND: 150,150,0,1
-- Rotate right (turn in place): COMMAND: 150,150,1,0
-- Stop: COMMAND: 0,0,2,2
-- Gentle left turn while moving: COMMAND: 100,180,1,1
-- Gentle right turn while moving: COMMAND: 180,100,1,1
+- Forward on tile: COMMAND: 190,190,1,1
+- Forward on carpet: COMMAND: 215,215,1,1
+- Backward: COMMAND: 190,190,0,0
+- Rotate left (turn in place): COMMAND: 230,230,0,1
+- Rotate right (turn in place): COMMAND: 230,230,1,0
+- Stop to evaluate: COMMAND: 0,0,2,2
+- Gentle left turn while moving: COMMAND: 150,200,1,1
+- Gentle right turn while moving: COMMAND: 200,150,1,1
+
+IMPORTANT CALIBRATION NOTES:
+- Turns require HIGH power (~230, which is 90%) to reliably rotate from a stop
+- Forward/backward works well at 190 (75%) on tile, needs 215 (85%) on carpet
+- Use speeds of 150-200 for controlled movement with time to react
+
+CRITICAL - TURN ASYMMETRY:
+- LEFT turns are approximately 2x MORE EFFICIENT than right turns!
+- For a 90-degree RIGHT turn: ~2.0-2.2 seconds at speed 230
+- For a 90-degree LEFT turn: ~1.25 seconds at speed 230
+- When turning left, use SHORTER durations than right turns
+- This asymmetry is due to weight distribution and motor differences
 
 MECANUM WHEEL NOTES:
 - This car has mecanum wheels (omnidirectional movement capable)
-- You can experiment with different motor patterns
 - The wheels can enable diagonal movement and strafing
-- Try different speed combinations to discover new movement patterns
+- For rotation: left wheels go one direction, right wheels go opposite
 """
 
         if self.state.last_command:

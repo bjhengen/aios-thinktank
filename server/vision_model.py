@@ -59,7 +59,7 @@ class VisionModel:
                 self.model_name,
                 torch_dtype=torch.bfloat16,  # Use bfloat16 for RTX 5090
                 device_map="auto",
-                attn_implementation="flash_attention_2"  # Faster attention if available
+                attn_implementation="sdpa"  # Use PyTorch's scaled dot-product attention
             )
 
             # Load processor

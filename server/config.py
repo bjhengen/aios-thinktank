@@ -36,7 +36,7 @@ class ServerConfig:
     log_level: str = "INFO"
     log_commands: bool = True
     log_inference_time: bool = True
-    save_debug_frames: bool = False
+    save_debug_frames: bool = True
     debug_frame_dir: str = "./debug_frames"
 
     def __post_init__(self):

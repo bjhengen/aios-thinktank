@@ -10,7 +10,7 @@ class PiConfig:
     """Raspberry Pi configuration parameters."""
 
     # Server connection
-    server_host: str = "192.168.1.100"  # UPDATE THIS to your server's IP
+    server_host: str = "192.168.1.234"  # slmbeast AI workstation
     server_port: int = 5555
     reconnect_delay: float = 5.0  # seconds between reconnection attempts
     connection_timeout: float = 10.0
