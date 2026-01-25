@@ -1,0 +1,15 @@
+# Raspberry Pi requirements
+# Install these on the Pi after setting up Raspberry Pi OS
+
+# Camera support (install via apt first: sudo apt-get install -y python3-picamera2)
+# picamera2  # Installed via apt
+
+# GPIO support (usually pre-installed on Raspberry Pi OS)
+# RPi.GPIO  # Installed via apt: sudo apt-get install python3-rpi.gpio
+
+# Image processing
+Pillow>=10.0.0
+
+# Note: Use apt-get for Pi-specific packages:
+# sudo apt-get update
+# sudo apt-get install -y python3-picamera2 python3-rpi.gpio python3-opencv
