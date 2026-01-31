@@ -28,11 +28,13 @@ class MotorCommand:
         right_speed: Right side speed (0-255)
         left_dir: Left side direction (Direction enum)
         right_dir: Right side direction (Direction enum)
+        duration_ms: Duration in milliseconds (0 = run until next command)
     """
     left_speed: int
     right_speed: int
     left_dir: Direction
     right_dir: Direction
+    duration_ms: int = 0  # 0 means run until next command
 
     def validate(self) -> None:
         """Validate command values are in acceptable ranges."""
@@ -44,66 +46,70 @@ class MotorCommand:
             raise ValueError(f"Invalid left_dir: {self.left_dir}")
         if self.right_dir not in Direction:
             raise ValueError(f"Invalid right_dir: {self.right_dir}")
+        if not (0 <= self.duration_ms <= 65535):
+            raise ValueError(f"Invalid duration_ms: {self.duration_ms}")
 
     def to_bytes(self) -> bytes:
         """
-        Convert command to 4-byte binary format.
+        Convert command to 6-byte binary format.
 
-        Format: [left_speed, right_speed, left_dir, right_dir]
+        Format: [left_speed, right_speed, left_dir, right_dir, duration_ms (2 bytes)]
         """
         self.validate()
-        return struct.pack('BBBB',
+        return struct.pack('>BBBBH',
                           self.left_speed,
                           self.right_speed,
                           self.left_dir.value,
-                          self.right_dir.value)
+                          self.right_dir.value,
+                          self.duration_ms)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'MotorCommand':
         """
-        Parse command from 4-byte binary format.
+        Parse command from 6-byte binary format.
 
         Args:
-            data: 4 bytes containing motor command
+            data: 6 bytes containing motor command
 
         Returns:
             MotorCommand instance
         """
-        if len(data) != 4:
-            raise ValueError(f"Expected 4 bytes, got {len(data)}")
+        if len(data) != 6:
+            raise ValueError(f"Expected 6 bytes, got {len(data)}")
 
-        left_speed, right_speed, left_dir, right_dir = struct.unpack('BBBB', data)
+        left_speed, right_speed, left_dir, right_dir, duration_ms = struct.unpack('>BBBBH', data)
         return cls(
             left_speed=left_speed,
             right_speed=right_speed,
             left_dir=Direction(left_dir),
-            right_dir=Direction(right_dir)
+            right_dir=Direction(right_dir),
+            duration_ms=duration_ms
         )
 
     @classmethod
     def stop(cls) -> 'MotorCommand':
         """Create a stop command (all motors stopped)."""
-        return cls(0, 0, Direction.STOP, Direction.STOP)
+        return cls(0, 0, Direction.STOP, Direction.STOP, 0)
 
     @classmethod
-    def forward(cls, speed: int = 200) -> 'MotorCommand':
+    def forward(cls, speed: int = 200, duration_ms: int = 0) -> 'MotorCommand':
         """Create a forward movement command."""
-        return cls(speed, speed, Direction.FORWARD, Direction.FORWARD)
+        return cls(speed, speed, Direction.FORWARD, Direction.FORWARD, duration_ms)
 
     @classmethod
-    def backward(cls, speed: int = 200) -> 'MotorCommand':
+    def backward(cls, speed: int = 200, duration_ms: int = 0) -> 'MotorCommand':
         """Create a backward movement command."""
-        return cls(speed, speed, Direction.BACKWARD, Direction.BACKWARD)
+        return cls(speed, speed, Direction.BACKWARD, Direction.BACKWARD, duration_ms)
 
     @classmethod
-    def rotate_left(cls, speed: int = 150) -> 'MotorCommand':
+    def rotate_left(cls, speed: int = 150, duration_ms: int = 0) -> 'MotorCommand':
         """Create a rotate left command."""
-        return cls(speed, speed, Direction.BACKWARD, Direction.FORWARD)
+        return cls(speed, speed, Direction.BACKWARD, Direction.FORWARD, duration_ms)
 
     @classmethod
-    def rotate_right(cls, speed: int = 150) -> 'MotorCommand':
+    def rotate_right(cls, speed: int = 150, duration_ms: int = 0) -> 'MotorCommand':
         """Create a rotate right command."""
-        return cls(speed, speed, Direction.FORWARD, Direction.BACKWARD)
+        return cls(speed, speed, Direction.FORWARD, Direction.BACKWARD, duration_ms)
 
 
 class FrameProtocol:
@@ -149,7 +155,7 @@ class FrameProtocol:
 # Protocol constants
 FRAME_HEADER_SIZE = 4
 MAX_FRAME_SIZE = 10 * 1024 * 1024  # 10MB max frame size
-COMMAND_SIZE = 4
+COMMAND_SIZE = 6  # 4 bytes motor control + 2 bytes duration
 DEFAULT_PORT = 5555
 KEEPALIVE_INTERVAL = 5  # seconds
 CONNECTION_TIMEOUT = 30  # seconds

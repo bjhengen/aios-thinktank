@@ -1,5 +1,5 @@
 """
-Vision model wrapper for Qwen3-VL-8B (or Qwen2-VL-7B).
+Vision model wrapper for Qwen2.5-VL-7B.
 
 This module handles loading and inference with the vision-language model
 that controls the robot car.
@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import torch
 from PIL import Image
 import io
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
 from shared.utils import setup_logging
@@ -55,7 +55,7 @@ class VisionModel:
 
         try:
             # Load model with optimizations
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,  # Use bfloat16 for RTX 5090
                 device_map="auto",

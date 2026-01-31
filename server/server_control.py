@@ -120,22 +120,27 @@ class ServerController:
                         prompt,
                         max_history=3  # Keep last 3 exchanges for context
                     )
-                    logger.info(f"AI Response: {response[:200]}...")  # Log first 200 chars
+                    logger.info(f"AI Response: {response[:300]}...")  # Log first 300 chars
 
-                    # Parse response to get command
-                    command, reasoning = self.command_generator.parse_response(response)
+                    # Parse response to get structured output
+                    parsed = self.command_generator.parse_response(response)
 
-                    if command is None:
+                    if parsed.command is None:
                         logger.warning("Failed to parse command, using fallback")
-                        command = self.command_generator.get_safe_fallback_command()
-                        reasoning = "Parse failed - emergency stop"
+                        parsed.command = self.command_generator.get_safe_fallback_command()
+                        parsed.reasoning = "Parse failed - emergency stop"
 
-                    logger.info(f"Command: {command}")
-                    logger.info(f"Reasoning: {reasoning}")
+                    # Log the structured response
+                    if parsed.observation:
+                        logger.info(f"Observation: {parsed.observation[:100]}")
+                    if parsed.assessment:
+                        logger.info(f"Assessment: {parsed.assessment[:100]}")
+                    logger.info(f"Command: {parsed.command}")
+                    logger.info(f"Reasoning: {parsed.reasoning}")
 
                     # Send command to car
-                    if conn.send_command(command):
-                        self.command_generator.update_state(command, reasoning)
+                    if conn.send_command(parsed.command):
+                        self.command_generator.update_state(parsed)
                     else:
                         logger.error("Failed to send command")
 

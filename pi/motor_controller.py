@@ -116,6 +116,9 @@ class MotorController:
 
         Args:
             command: MotorCommand to execute
+
+        If duration_ms > 0, the command runs for that duration then stops automatically.
+        If duration_ms == 0, the command runs until the next command or watchdog timeout.
         """
         if not self.initialized:
             logger.error("Motor controller not initialized")
@@ -125,6 +128,9 @@ class MotorController:
 
         if self.simulate:
             logger.info(f"[SIM] Executing: {command}")
+            if command.duration_ms > 0:
+                time.sleep(command.duration_ms / 1000.0)
+                logger.info("[SIM] Duration complete, stopping")
             return
 
         try:
@@ -147,6 +153,12 @@ class MotorController:
             )
 
             logger.debug(f"Executed: {command}")
+
+            # Handle duration-based execution
+            if command.duration_ms > 0:
+                time.sleep(command.duration_ms / 1000.0)
+                self._stop_all_motors()
+                logger.debug(f"Duration complete ({command.duration_ms}ms), stopped")
 
         except Exception as e:
             logger.error(f"Error executing command: {e}")
@@ -189,6 +201,25 @@ class MotorController:
         for pin in pwm_pins:
             if pin in self.pwm_objects:
                 self.pwm_objects[pin].ChangeDutyCycle(duty_cycle)
+
+    def _stop_all_motors(self) -> None:
+        """Stop all motors (internal helper, no warning log)."""
+        try:
+            # Set all direction pins LOW
+            pins = [
+                config.fl_forward, config.fl_backward,
+                config.fr_forward, config.fr_backward,
+                config.rl_forward, config.rl_backward,
+                config.rr_forward, config.rr_backward,
+            ]
+            for pin in pins:
+                GPIO.output(pin, GPIO.LOW)
+
+            # Set all PWM to 0
+            for pwm in self.pwm_objects.values():
+                pwm.ChangeDutyCycle(0)
+        except Exception as e:
+            logger.error(f"Error stopping motors: {e}")
 
     def emergency_stop(self) -> None:
         """Immediately stop all motors."""

@@ -16,25 +16,35 @@ def test_motor_command():
     """Test motor command encoding/decoding."""
     print("Testing MotorCommand...")
 
-    # Test basic command
+    # Test basic command (with default duration=0)
     cmd = MotorCommand(200, 200, Direction.FORWARD, Direction.FORWARD)
     data = cmd.to_bytes()
-    assert len(data) == 4, f"Expected 4 bytes, got {len(data)}"
+    assert len(data) == 6, f"Expected 6 bytes, got {len(data)}"
 
     cmd2 = MotorCommand.from_bytes(data)
     assert cmd.left_speed == cmd2.left_speed
     assert cmd.right_speed == cmd2.right_speed
     assert cmd.left_dir == cmd2.left_dir
     assert cmd.right_dir == cmd2.right_dir
+    assert cmd.duration_ms == cmd2.duration_ms == 0
 
     print("  ✓ Basic encoding/decoding works")
 
+    # Test command with duration
+    cmd_duration = MotorCommand(180, 180, Direction.FORWARD, Direction.FORWARD, 2500)
+    data_duration = cmd_duration.to_bytes()
+    cmd_duration2 = MotorCommand.from_bytes(data_duration)
+    assert cmd_duration2.duration_ms == 2500
+
+    print("  ✓ Duration encoding/decoding works")
+
     # Test helper methods
-    forward = MotorCommand.forward(180)
+    forward = MotorCommand.forward(180, 1500)
     assert forward.left_speed == 180
     assert forward.right_speed == 180
     assert forward.left_dir == Direction.FORWARD
     assert forward.right_dir == Direction.FORWARD
+    assert forward.duration_ms == 1500
 
     print("  ✓ Helper methods work")
 

@@ -16,7 +16,7 @@ class ServerConfig:
     max_connections: int = 1  # Only one car at a time for now
 
     # AI Model settings
-    model_name: str = "Qwen/Qwen2-VL-7B-Instruct"  # Or Qwen3-VL-8B when available
+    model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"  # Upgraded from Qwen2-VL
     model_device: str = "cuda"  # Use GPU
     max_context_length: int = 128000  # 128k context window
     temperature: float = 0.7

@@ -23,9 +23,20 @@ class ControlState:
     """Current control state and context."""
     current_goal: str = ""
     last_command: Optional[MotorCommand] = None
+    last_observation: str = ""
+    last_assessment: str = ""
     last_reasoning: str = ""
     steps_taken: int = 0
     obstacles_detected: int = 0
+
+
+@dataclass
+class ParsedResponse:
+    """Parsed response from the vision model."""
+    command: Optional[MotorCommand]
+    observation: str = ""
+    assessment: str = ""
+    reasoning: str = ""
 
 
 class CommandGenerator:
@@ -55,94 +66,106 @@ class CommandGenerator:
 
 CURRENT GOAL: {goal}
 
-You can see through the camera. Analyze the image and decide what motor action to take next.
+You must LOOK before you ACT. Follow the output format exactly.
+
+OUTPUT FORMAT (REQUIRED - follow this order):
+OBSERVATION: <describe what you see: floor type, obstacles, walls, openings, landmarks>
+ASSESSMENT: <evaluate: is path clear? which direction leads toward goal? any hazards?>
+COMMAND: <left_speed>,<right_speed>,<left_dir>,<right_dir>,<duration_ms>
+REASONING: <brief explanation connecting your observation to your command choice>
 
 MOTOR CONTROL:
-You control 4 wheels using left/right motor groups:
-- left_speed: 0-255 (0=stop, 255=max)
-- right_speed: 0-255 (0=stop, 255=max)
-- left_dir: 0=backward, 1=forward, 2=stop
-- right_dir: 0=backward, 1=forward, 2=stop
-
-OUTPUT FORMAT (REQUIRED):
-COMMAND: <left_speed>,<right_speed>,<left_dir>,<right_dir>
-REASONING: <brief explanation of why you chose this action>
+- left_speed, right_speed: 0-255 (0=stop, 255=max)
+- left_dir, right_dir: 0=backward, 1=forward, 2=stop
+- duration_ms: milliseconds to run (0=continuous until next command)
 """
 
         if include_examples:
             prompt += """
-EXAMPLE COMMANDS:
-- Forward on tile: COMMAND: 190,190,1,1
-- Forward on carpet: COMMAND: 215,215,1,1
-- Backward: COMMAND: 190,190,0,0
-- Rotate left (turn in place): COMMAND: 230,230,0,1
-- Rotate right (turn in place): COMMAND: 230,230,1,0
-- Stop to evaluate: COMMAND: 0,0,2,2
-- Gentle left turn while moving: COMMAND: 150,200,1,1
-- Gentle right turn while moving: COMMAND: 200,150,1,1
+EXAMPLE OUTPUT:
+OBSERVATION: Hardwood floor ahead, clear path for about 2 meters, doorway visible on the left, wall on the right
+ASSESSMENT: Path is clear straight ahead, doorway on left might lead to kitchen, no immediate obstacles
+COMMAND: 190,190,1,1,2000
+REASONING: Moving forward on hard floor to approach the doorway for a better view
 
-IMPORTANT CALIBRATION NOTES:
-- Turns require HIGH power (~230, which is 90%) to reliably rotate from a stop
-- Forward/backward works well at 190 (75%) on tile, needs 215 (85%) on carpet
-- Use speeds of 150-200 for controlled movement with time to react
+COMMAND REFERENCE:
+- Forward (tile): 190,190,1,1,<duration>
+- Forward (carpet): 215,215,1,1,<duration>
+- Backward: 190,190,0,0,<duration>
+- Rotate left 90°: 230,230,0,1,1250
+- Rotate right 90°: 230,230,1,0,2100
+- Stop to look: 0,0,2,2,0
+- Curve left: 150,200,1,1,<duration>
+- Curve right: 200,150,1,1,<duration>
 
-CRITICAL - TURN ASYMMETRY:
-- LEFT turns are approximately 2x MORE EFFICIENT than right turns!
-- For a 90-degree RIGHT turn: ~2.0-2.2 seconds at speed 230
-- For a 90-degree LEFT turn: ~1.25 seconds at speed 230
-- When turning left, use SHORTER durations than right turns
-- This asymmetry is due to weight distribution and motor differences
-
-MECANUM WHEEL NOTES:
-- This car has mecanum wheels (omnidirectional movement capable)
-- The wheels can enable diagonal movement and strafing
-- For rotation: left wheels go one direction, right wheels go opposite
+CALIBRATION:
+- Turns need HIGH power (~230) to reliably rotate
+- LEFT turns are 2x more efficient than right (1250ms vs 2100ms for 90°)
+- Use 1000-3000ms duration for most moves
+- Carpet needs more power (215) than tile (190)
 """
 
         if self.state.last_command:
             prompt += f"\nPREVIOUS COMMAND: {self._command_to_string(self.state.last_command)}"
-            if self.state.last_reasoning:
-                prompt += f"\nPREVIOUS REASONING: {self.state.last_reasoning}"
+            if self.state.last_observation:
+                prompt += f"\nPREVIOUS OBSERVATION: {self.state.last_observation}"
+            if self.state.last_assessment:
+                prompt += f"\nPREVIOUS ASSESSMENT: {self.state.last_assessment}"
 
         prompt += f"\n\nSTEPS TAKEN: {self.state.steps_taken}"
 
-        prompt += "\n\nAnalyze the image and provide your decision in the required format."
+        prompt += "\n\nAnalyze the image. Describe what you see, assess the situation, then command."
 
         return prompt
 
-    def parse_response(self, response: str) -> Tuple[Optional[MotorCommand], str]:
+    def parse_response(self, response: str) -> ParsedResponse:
         """
-        Parse AI response to extract motor command and reasoning.
+        Parse AI response to extract observation, assessment, command, and reasoning.
 
         Args:
             response: Raw text response from vision model
 
         Returns:
-            Tuple of (MotorCommand or None, reasoning string)
+            ParsedResponse with all extracted fields
         """
         command = None
+        observation = ""
+        assessment = ""
         reasoning = ""
 
-        # Extract command line
-        command_match = re.search(r'COMMAND:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', response)
+        # Extract observation
+        obs_match = re.search(r'OBSERVATION:\s*(.+?)(?=\n(?:ASSESSMENT|COMMAND|REASONING):|$)', response, re.IGNORECASE | re.DOTALL)
+        if obs_match:
+            observation = obs_match.group(1).strip()
+
+        # Extract assessment
+        assess_match = re.search(r'ASSESSMENT:\s*(.+?)(?=\n(?:COMMAND|REASONING):|$)', response, re.IGNORECASE | re.DOTALL)
+        if assess_match:
+            assessment = assess_match.group(1).strip()
+
+        # Extract command line - expects 5 values with duration_ms
+        command_match = re.search(r'COMMAND:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', response)
         if command_match:
             try:
                 left_speed = int(command_match.group(1))
                 right_speed = int(command_match.group(2))
                 left_dir = int(command_match.group(3))
                 right_dir = int(command_match.group(4))
+                duration_ms = int(command_match.group(5))
 
                 # Clamp values to valid ranges
                 left_speed = max(0, min(255, left_speed))
                 right_speed = max(0, min(255, right_speed))
                 left_dir = max(0, min(2, left_dir))
                 right_dir = max(0, min(2, right_dir))
+                duration_ms = max(0, min(65535, duration_ms))
 
                 command = MotorCommand(
                     left_speed=left_speed,
                     right_speed=right_speed,
                     left_dir=Direction(left_dir),
-                    right_dir=Direction(right_dir)
+                    right_dir=Direction(right_dir),
+                    duration_ms=duration_ms
                 )
                 logger.debug(f"Parsed command: {command}")
 
@@ -154,34 +177,41 @@ MECANUM WHEEL NOTES:
         if reasoning_match:
             reasoning = reasoning_match.group(1).strip()
 
-        # If no structured response found, try to extract any numbers
+        # If no structured command found, try to extract any numbers as fallback
         if command is None:
             logger.warning("No COMMAND: format found, attempting fallback parsing")
             numbers = re.findall(r'\b(\d+)\b', response)
-            if len(numbers) >= 4:
+            if len(numbers) >= 5:
                 try:
                     command = MotorCommand(
                         left_speed=max(0, min(255, int(numbers[0]))),
                         right_speed=max(0, min(255, int(numbers[1]))),
                         left_dir=Direction(max(0, min(2, int(numbers[2])))),
-                        right_dir=Direction(max(0, min(2, int(numbers[3]))))
+                        right_dir=Direction(max(0, min(2, int(numbers[3])))),
+                        duration_ms=max(0, min(65535, int(numbers[4])))
                     )
                     logger.info(f"Fallback parsing succeeded: {command}")
                 except Exception as e:
                     logger.error(f"Fallback parsing failed: {e}")
 
-        return command, reasoning
+        return ParsedResponse(
+            command=command,
+            observation=observation,
+            assessment=assessment,
+            reasoning=reasoning
+        )
 
-    def update_state(self, command: MotorCommand, reasoning: str) -> None:
+    def update_state(self, parsed: ParsedResponse) -> None:
         """
-        Update control state with latest command.
+        Update control state with latest parsed response.
 
         Args:
-            command: The executed motor command
-            reasoning: AI's reasoning for the command
+            parsed: ParsedResponse containing command and context
         """
-        self.state.last_command = command
-        self.state.last_reasoning = reasoning
+        self.state.last_command = parsed.command
+        self.state.last_observation = parsed.observation
+        self.state.last_assessment = parsed.assessment
+        self.state.last_reasoning = parsed.reasoning
         self.state.steps_taken += 1
 
     def set_goal(self, goal: str) -> None:
@@ -194,6 +224,8 @@ MECANUM WHEEL NOTES:
         logger.info(f"New goal set: {goal}")
         self.state.current_goal = goal
         self.state.last_command = None
+        self.state.last_observation = ""
+        self.state.last_assessment = ""
         self.state.last_reasoning = ""
         self.state.steps_taken = 0
         self.state.obstacles_detected = 0
@@ -218,14 +250,14 @@ MECANUM WHEEL NOTES:
         Returns:
             Human-readable string
         """
-        return f"{command.left_speed},{command.right_speed},{command.left_dir.value},{command.right_dir.value}"
+        return f"{command.left_speed},{command.right_speed},{command.left_dir.value},{command.right_dir.value},{command.duration_ms}"
 
 
 class SimpleCommandParser:
     """
     Simple command parser for manual control and testing.
 
-    Allows human-readable commands like "forward 200", "rotate left 150", etc.
+    Allows human-readable commands like "forward 200 2000", "rotate left 150 1250", etc.
     """
 
     @staticmethod
@@ -234,23 +266,37 @@ class SimpleCommandParser:
         Parse a simple text command.
 
         Args:
-            command_str: Command string (e.g., "forward 200", "stop")
+            command_str: Command string (e.g., "forward 200 2000", "stop")
+                        Format: <command> [speed] [duration_ms]
 
         Returns:
             MotorCommand or None if parsing fails
         """
         command_str = command_str.lower().strip()
 
-        # Handle direct numeric format: "200,200,1,1"
+        # Handle direct numeric format: "200,200,1,1,2000"
         if ',' in command_str:
             parts = command_str.split(',')
-            if len(parts) == 4:
+            if len(parts) == 5:
                 try:
                     return MotorCommand(
                         left_speed=int(parts[0].strip()),
                         right_speed=int(parts[1].strip()),
                         left_dir=Direction(int(parts[2].strip())),
-                        right_dir=Direction(int(parts[3].strip()))
+                        right_dir=Direction(int(parts[3].strip())),
+                        duration_ms=int(parts[4].strip())
+                    )
+                except Exception:
+                    pass
+            # Also support old 4-value format for backwards compatibility
+            elif len(parts) == 4:
+                try:
+                    return MotorCommand(
+                        left_speed=int(parts[0].strip()),
+                        right_speed=int(parts[1].strip()),
+                        left_dir=Direction(int(parts[2].strip())),
+                        right_dir=Direction(int(parts[3].strip())),
+                        duration_ms=0
                     )
                 except Exception:
                     pass
@@ -259,16 +305,17 @@ class SimpleCommandParser:
         parts = command_str.split()
         cmd = parts[0] if parts else ""
         speed = int(parts[1]) if len(parts) > 1 else 200
+        duration_ms = int(parts[2]) if len(parts) > 2 else 0
 
         if cmd in ["stop", "s"]:
             return MotorCommand.stop()
         elif cmd in ["forward", "f", "fwd"]:
-            return MotorCommand.forward(speed)
+            return MotorCommand.forward(speed, duration_ms)
         elif cmd in ["backward", "b", "back"]:
-            return MotorCommand.backward(speed)
+            return MotorCommand.backward(speed, duration_ms)
         elif cmd in ["left", "l", "rotate_left"]:
-            return MotorCommand.rotate_left(speed)
+            return MotorCommand.rotate_left(speed, duration_ms)
         elif cmd in ["right", "r", "rotate_right"]:
-            return MotorCommand.rotate_right(speed)
+            return MotorCommand.rotate_right(speed, duration_ms)
 
         return None
