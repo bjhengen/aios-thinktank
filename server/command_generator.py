@@ -29,6 +29,8 @@ class ControlState:
     steps_taken: int = 0
     obstacles_detected: int = 0
     blind_frames: int = 0  # Consecutive frames with poor visibility
+    just_backed_up: bool = False  # True if last command was a reflex backup
+    backup_count: int = 0  # How many times we've backed up in this stuck situation
 
 
 # Keywords indicating the camera can't see properly
@@ -77,26 +79,43 @@ class CommandGenerator:
         logger.warning(f"Blind for {self.state.blind_frames} frames - backing up!")
         return MotorCommand.backward(self.BACKUP_SPEED, self.BACKUP_DURATION_MS)
 
+    def _get_turn_command(self) -> MotorCommand:
+        """Get a command to turn after backing up (prefer left turns - more efficient)."""
+        logger.warning("Turning to find new path")
+        # Turn left ~90 degrees (1250ms at speed 230)
+        return MotorCommand.rotate_left(230, 1250)
+
     def check_and_override_if_blind(self, parsed: ParsedResponse) -> ParsedResponse:
         """
         Check if we should override the command due to poor visibility.
 
-        If we've been blind for BLIND_THRESHOLD consecutive frames,
-        override with a backup command.
+        Reflex behavior:
+        1. If blind for BLIND_THRESHOLD frames -> back up
+        2. After backing up, if still blind -> turn to try new direction
+        3. Reset counters when vision is restored
         """
         if self._is_blind_observation(parsed.observation):
             self.state.blind_frames += 1
             logger.info(f"Blind frame detected ({self.state.blind_frames} consecutive)")
 
-            if self.state.blind_frames >= self.BLIND_THRESHOLD:
-                # Override with backup command
+            if self.state.just_backed_up:
+                # We backed up but still blind - turn to try new direction
+                parsed.command = self._get_turn_command()
+                parsed.reasoning = f"REFLEX: Still blind after backup, turning to find new path"
+                self.state.just_backed_up = False
+                self.state.backup_count += 1
+            elif self.state.blind_frames >= self.BLIND_THRESHOLD:
+                # First response to blindness - back up
                 parsed.command = self._get_backup_command()
                 parsed.reasoning = f"REFLEX: Blind for {self.state.blind_frames} frames, backing up"
+                self.state.just_backed_up = True
         else:
-            # Reset blind counter on clear frame
+            # Vision restored - reset all reflex state
             if self.state.blind_frames > 0:
-                logger.info("Vision restored, resetting blind counter")
+                logger.info("Vision restored, resetting reflex state")
             self.state.blind_frames = 0
+            self.state.just_backed_up = False
+            self.state.backup_count = 0
 
         return parsed
 
@@ -279,6 +298,8 @@ CALIBRATION:
         self.state.steps_taken = 0
         self.state.obstacles_detected = 0
         self.state.blind_frames = 0
+        self.state.just_backed_up = False
+        self.state.backup_count = 0
 
     def get_safe_fallback_command(self) -> MotorCommand:
         """
