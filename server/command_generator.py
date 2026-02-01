@@ -158,7 +158,7 @@ REASONING: Moving forward on hard floor to approach the doorway for a better vie
 
 COMMAND REFERENCE:
 - Forward (tile): 190,190,1,1,<duration>
-- Forward (carpet): 215,215,1,1,<duration>
+- Forward (carpet): 235,235,1,1,<duration>
 - Backward: 190,190,0,0,<duration>
 - Rotate left 90°: 230,230,0,1,1250
 - Rotate right 90°: 230,230,1,0,2100
@@ -170,7 +170,7 @@ CALIBRATION:
 - Turns need HIGH power (~230) to reliably rotate
 - LEFT turns are 2x more efficient than right (1250ms vs 2100ms for 90°)
 - Use 1000-3000ms duration for most moves
-- Carpet needs more power (215) than tile (190)
+- Carpet needs more power (235) than tile (190)
 """
 
         if self.state.last_command:
