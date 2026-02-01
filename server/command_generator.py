@@ -28,6 +28,15 @@ class ControlState:
     last_reasoning: str = ""
     steps_taken: int = 0
     obstacles_detected: int = 0
+    blind_frames: int = 0  # Consecutive frames with poor visibility
+
+
+# Keywords indicating the camera can't see properly
+BLIND_KEYWORDS = [
+    "dark", "blurry", "blur", "black", "cannot see", "can't see",
+    "difficult to discern", "impossible to assess", "unclear",
+    "no visible", "nothing visible", "too close"
+]
 
 
 @dataclass
@@ -46,10 +55,50 @@ class CommandGenerator:
     Handles prompt construction and response parsing.
     """
 
+    # How many consecutive blind frames before we back up
+    BLIND_THRESHOLD = 2
+    # How long to back up (ms)
+    BACKUP_DURATION_MS = 1500
+    # Backup speed
+    BACKUP_SPEED = 150
+
     def __init__(self):
         """Initialize command generator."""
         self.state = ControlState()
         logger.info("CommandGenerator initialized")
+
+    def _is_blind_observation(self, observation: str) -> bool:
+        """Check if observation indicates poor visibility."""
+        obs_lower = observation.lower()
+        return any(keyword in obs_lower for keyword in BLIND_KEYWORDS)
+
+    def _get_backup_command(self) -> MotorCommand:
+        """Get a command to back up when blind."""
+        logger.warning(f"Blind for {self.state.blind_frames} frames - backing up!")
+        return MotorCommand.backward(self.BACKUP_SPEED, self.BACKUP_DURATION_MS)
+
+    def check_and_override_if_blind(self, parsed: ParsedResponse) -> ParsedResponse:
+        """
+        Check if we should override the command due to poor visibility.
+
+        If we've been blind for BLIND_THRESHOLD consecutive frames,
+        override with a backup command.
+        """
+        if self._is_blind_observation(parsed.observation):
+            self.state.blind_frames += 1
+            logger.info(f"Blind frame detected ({self.state.blind_frames} consecutive)")
+
+            if self.state.blind_frames >= self.BLIND_THRESHOLD:
+                # Override with backup command
+                parsed.command = self._get_backup_command()
+                parsed.reasoning = f"REFLEX: Blind for {self.state.blind_frames} frames, backing up"
+        else:
+            # Reset blind counter on clear frame
+            if self.state.blind_frames > 0:
+                logger.info("Vision restored, resetting blind counter")
+            self.state.blind_frames = 0
+
+        return parsed
 
     def build_prompt(self, goal: str, include_examples: bool = True) -> str:
         """
@@ -229,6 +278,7 @@ CALIBRATION:
         self.state.last_reasoning = ""
         self.state.steps_taken = 0
         self.state.obstacles_detected = 0
+        self.state.blind_frames = 0
 
     def get_safe_fallback_command(self) -> MotorCommand:
         """

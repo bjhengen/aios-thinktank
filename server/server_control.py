@@ -130,6 +130,9 @@ class ServerController:
                         parsed.command = self.command_generator.get_safe_fallback_command()
                         parsed.reasoning = "Parse failed - emergency stop"
 
+                    # Check for blind/collision reflex override
+                    parsed = self.command_generator.check_and_override_if_blind(parsed)
+
                     # Log the structured response
                     if parsed.observation:
                         logger.info(f"Observation: {parsed.observation[:100]}")
