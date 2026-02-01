@@ -20,7 +20,7 @@ class ServerConfig:
     model_device: str = "cuda"  # Use GPU
     max_context_length: int = 128000  # 128k context window
     temperature: float = 0.7
-    max_new_tokens: int = 100  # Short responses for motor commands
+    max_new_tokens: int = 250  # Need room for OBSERVATION + ASSESSMENT + COMMAND + REASONING
 
     # Vision settings
     target_fps: int = 10  # Target frame processing rate

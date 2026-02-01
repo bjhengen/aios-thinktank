@@ -35,9 +35,10 @@ class ControlState:
 
 # Keywords indicating the camera can't see properly
 BLIND_KEYWORDS = [
-    "dark", "blurry", "blur", "black", "cannot see", "can't see",
-    "difficult to discern", "impossible to assess", "unclear",
-    "no visible", "nothing visible", "too close"
+    "very dark", "too dark", "completely dark", "blurry", "blur",
+    "cannot see", "can't see", "difficult to discern",
+    "impossible to assess", "too close", "blocked",
+    "uniform gray", "no discernible", "close-up"
 ]
 
 
@@ -158,7 +159,7 @@ REASONING: Moving forward on hard floor to approach the doorway for a better vie
 
 COMMAND REFERENCE:
 - Forward (tile): 190,190,1,1,<duration>
-- Forward (carpet): 235,235,1,1,<duration>
+- Forward (carpet): 250,250,1,1,<duration>
 - Backward: 190,190,0,0,<duration>
 - Rotate left 90°: 230,230,0,1,1250
 - Rotate right 90°: 230,230,1,0,2100
@@ -170,7 +171,7 @@ CALIBRATION:
 - Turns need HIGH power (~230) to reliably rotate
 - LEFT turns are 2x more efficient than right (1250ms vs 2100ms for 90°)
 - Use 1000-3000ms duration for most moves
-- Carpet needs more power (235) than tile (190)
+- Carpet needs more power (250) than tile (190)
 """
 
         if self.state.last_command:
