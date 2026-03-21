@@ -12,7 +12,7 @@ from typing import Optional, Callable
 from queue import Queue, Empty
 
 from shared.protocol import (
-    FrameProtocol, MotorCommand, FRAME_HEADER_SIZE,
+    FrameProtocol, MotorCommand, SensorData, FRAME_HEADER_SIZE,
     MAX_FRAME_SIZE, COMMAND_SIZE, DEFAULT_PORT
 )
 from shared.utils import setup_logging
@@ -132,7 +132,7 @@ class CarConnection:
                 return None
         return bytes(data)
 
-    def get_frame(self, timeout: float = 0.1) -> Optional[bytes]:
+    def get_frame(self, timeout: float = 0.1):
         """
         Get the next frame from the queue.
 
@@ -140,10 +140,11 @@ class CarConnection:
             timeout: Maximum time to wait for a frame
 
         Returns:
-            JPEG frame data, or None if no frame available
+            Tuple of (SensorData, jpeg_bytes), or None if no frame available
         """
         try:
-            return self.frame_queue.get(timeout=timeout)
+            raw_payload = self.frame_queue.get(timeout=timeout)
+            return FrameProtocol.decode_frame_payload(raw_payload)
         except Empty:
             return None
 

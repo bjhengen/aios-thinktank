@@ -102,16 +102,24 @@ class ServerController:
                     time.sleep(1.0)
                     continue
 
-                # Get frame from car
-                frame_data = conn.get_frame(timeout=0.5)
-                if not frame_data:
+                # Get frame from car (now returns tuple with sensor data)
+                result = conn.get_frame(timeout=0.5)
+                if not result:
                     continue
 
+                sensor_data, frame_data = result
                 frame_count += 1
                 logger.info(f"Processing frame {frame_count} ({len(frame_data)} bytes)")
 
-                # Build prompt
-                prompt = self.command_generator.build_prompt(goal)
+                # Log sensor readings if present
+                distances = sensor_data.to_dict()
+                if any(v is not None for v in distances.values()):
+                    logger.debug(f"Sensors: {distances}")
+
+                # Build prompt with sensor data
+                prompt = self.command_generator.build_prompt(
+                    goal, sensor_data=sensor_data
+                )
 
                 # Process frame with AI
                 try:

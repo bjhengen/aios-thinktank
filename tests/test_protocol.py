@@ -9,7 +9,10 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from shared.protocol import MotorCommand, Direction, FrameProtocol
+from shared.protocol import (
+    MotorCommand, Direction, FrameProtocol, SensorData,
+    SENSOR_HEADER_SIZE, SENSOR_MAGIC
+)
 
 
 def test_motor_command():
@@ -83,7 +86,111 @@ def test_frame_protocol():
     print("FrameProtocol tests passed!\n")
 
 
+def test_sensor_data():
+    """Test SensorData encoding/decoding."""
+    print("Testing SensorData...")
+
+    # Test basic round-trip
+    sd = SensorData(fc=0, fl=450, fr=320, rl=1200, rr=800)
+    data = sd.to_bytes()
+    assert len(data) == SENSOR_HEADER_SIZE, f"Expected {SENSOR_HEADER_SIZE} bytes, got {len(data)}"
+    assert data[:2] == SENSOR_MAGIC
+
+    sd2 = SensorData.from_bytes(data)
+    assert sd2.fc == 0
+    assert sd2.fl == 450
+    assert sd2.fr == 320
+    assert sd2.rl == 1200
+    assert sd2.rr == 800
+
+    print("  ✓ SensorData round-trip works")
+
+    # Test empty sensor data
+    empty = SensorData.empty()
+    assert empty.fc == 0
+    assert empty.fl == 0
+    data_empty = empty.to_bytes()
+    empty2 = SensorData.from_bytes(data_empty)
+    assert empty2.fc == 0 and empty2.fl == 0
+
+    print("  ✓ SensorData.empty() works")
+
+    # Test to_dict conversion (mm to cm, 0 = None)
+    sd = SensorData(fc=0, fl=150, fr=0, rl=300, rr=50)
+    d = sd.to_dict()
+    assert d['fc'] is None  # 0 → None
+    assert d['fl'] == 15.0  # 150mm → 15.0cm
+    assert d['fr'] is None  # 0 → None
+    assert d['rl'] == 30.0  # 300mm → 30.0cm
+    assert d['rr'] == 5.0   # 50mm → 5.0cm
+
+    print("  ✓ SensorData.to_dict() works")
+
+    # Test invalid magic
+    bad_data = b'\x00\x00' + b'\x00' * 18
+    try:
+        SensorData.from_bytes(bad_data)
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    print("  ✓ Invalid magic rejected")
+
+    # Test too-short data
+    try:
+        SensorData.from_bytes(b'\x53\x01\x00')
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    print("  ✓ Short data rejected")
+
+    print("SensorData tests passed!\n")
+
+
+def test_frame_with_sensors():
+    """Test frame encoding/decoding with sensor data."""
+    print("Testing frame+sensors...")
+
+    fake_jpeg = b'\xff\xd8\xff\xe0' + b'\x00' * 100 + b'\xff\xd9'
+    sd = SensorData(fc=0, fl=250, fr=180, rl=500, rr=400)
+
+    # Encode frame with sensors
+    encoded = FrameProtocol.encode_frame_with_sensors(fake_jpeg, sd)
+    # Format: [4-byte size][20-byte sensor header][JPEG]
+    expected_size = 4 + SENSOR_HEADER_SIZE + len(fake_jpeg)
+    assert len(encoded) == expected_size, f"Expected {expected_size}, got {len(encoded)}"
+
+    # Decode size header
+    size = FrameProtocol.decode_frame_size(encoded[:4])
+    assert size == SENSOR_HEADER_SIZE + len(fake_jpeg)
+
+    # Decode payload
+    payload = encoded[4:]
+    sd2, jpeg2 = FrameProtocol.decode_frame_payload(payload)
+    assert jpeg2 == fake_jpeg
+    assert sd2.fl == 250
+    assert sd2.fr == 180
+    assert sd2.rl == 500
+    assert sd2.rr == 400
+
+    print("  ✓ Frame+sensors round-trip works")
+
+    # Test backward compatibility: plain JPEG without sensor header
+    plain_encoded = FrameProtocol.encode_frame(fake_jpeg)
+    plain_payload = plain_encoded[4:]
+    sd3, jpeg3 = FrameProtocol.decode_frame_payload(plain_payload)
+    assert jpeg3 == fake_jpeg
+    assert sd3.fc == 0 and sd3.fl == 0  # Empty sensor data
+
+    print("  ✓ Backward compatibility (plain JPEG) works")
+
+    print("Frame+sensors tests passed!\n")
+
+
 if __name__ == "__main__":
     test_motor_command()
     test_frame_protocol()
+    test_sensor_data()
+    test_frame_with_sensors()
     print("All protocol tests passed!")

@@ -60,6 +60,13 @@ class PiConfig:
     ultrasonic_min_distance: float = 2.0  # cm - closer readings are unreliable
     ultrasonic_max_distance: float = 400.0  # cm - max rated range
 
+    # Motor compensation (all motors working)
+    rl_motor_dead: bool = False  # Set True if RL motor fails again
+    comp_fl: float = 1.0    # FL at full commanded speed
+    comp_rl: float = 1.0    # RL at full commanded speed
+    comp_fr: float = 0.94   # FR reduced to correct rightward pull
+    comp_rr: float = 0.94   # RR reduced to correct rightward pull
+
     # Safety settings
     watchdog_timeout: float = 1.0  # Stop motors if no command for this long
     emergency_stop_gpio: int = 21  # GPIO pin for emergency stop button (optional)

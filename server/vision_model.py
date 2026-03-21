@@ -1,17 +1,15 @@
 """
-Vision model wrapper for Qwen2.5-VL-7B.
+Vision model wrapper using llama-swap (OpenAI-compatible API).
 
-This module handles loading and inference with the vision-language model
-that controls the robot car.
+This module handles inference with the vision-language model
+that controls the robot car, via HTTP to llama-swap on port 8200.
 """
 
+import base64
 import time
-from typing import Optional, Tuple
-import torch
-from PIL import Image
-import io
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from typing import Optional
+
+import requests
 
 from shared.utils import setup_logging
 from server.config import config
@@ -22,60 +20,49 @@ logger = setup_logging(__name__)
 
 class VisionModel:
     """
-    Wrapper for Qwen vision-language model.
+    Wrapper for vision-language model via llama-swap HTTP API.
 
-    This class handles model loading, inference, and maintains conversation
-    history for context-aware control.
+    Uses OpenAI-compatible /v1/chat/completions endpoint with base64 images.
     """
 
-    def __init__(self, model_name: Optional[str] = None, device: Optional[str] = None):
-        """
-        Initialize the vision model.
-
-        Args:
-            model_name: HuggingFace model identifier (default: from config)
-            device: Device to run model on (default: from config)
-        """
+    def __init__(self, model_name: Optional[str] = None):
         self.model_name = model_name or config.model_name
-        self.device = device or config.model_device
-        self.model = None
-        self.processor = None
+        self.api_url = f"{config.llama_swap_url}/v1/chat/completions"
+        self.session = None
         self.conversation_history = []
 
-        logger.info(f"Initializing VisionModel: {self.model_name} on {self.device}")
+        logger.info(f"Initializing VisionModel: {self.model_name} via {config.llama_swap_url}")
 
     def load(self) -> None:
-        """
-        Load the model and processor.
-
-        This can take significant time and memory on first load.
-        """
-        logger.info("Loading vision model...")
+        """Create HTTP session and verify llama-swap connectivity."""
+        logger.info("Connecting to llama-swap...")
         start_time = time.time()
 
+        self.session = requests.Session()
+        self.session.headers.update({"Content-Type": "application/json"})
+
+        # Test connectivity
         try:
-            # Load model with optimizations
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.bfloat16,  # Use bfloat16 for RTX 5090
-                device_map="auto",
-                attn_implementation="sdpa"  # Use PyTorch's scaled dot-product attention
+            resp = self.session.get(
+                f"{config.llama_swap_url}/v1/models",
+                timeout=5.0
             )
+            resp.raise_for_status()
+            logger.info(f"llama-swap connected, available models: {resp.json()}")
+        except requests.RequestException as e:
+            logger.warning(f"Could not list models (non-fatal): {e}")
 
-            # Load processor
-            self.processor = AutoProcessor.from_pretrained(self.model_name)
-
+        # Pre-warm: send a tiny request to trigger model loading
+        logger.info("Pre-warming model (this may take a moment on first load)...")
+        try:
+            warmup_messages = [
+                {"role": "user", "content": "Hi"}
+            ]
+            self._call_api(warmup_messages, max_tokens=5)
             load_time = time.time() - start_time
-            logger.info(f"Model loaded successfully in {load_time:.2f}s")
-
-            # Log model info
-            if hasattr(self.model, 'num_parameters'):
-                params = self.model.num_parameters() / 1e9
-                logger.info(f"Model parameters: {params:.2f}B")
-
+            logger.info(f"Model ready in {load_time:.2f}s")
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise
+            logger.warning(f"Pre-warm failed (will retry on first frame): {e}")
 
     def process_frame(self, jpeg_data: bytes, prompt: str) -> str:
         """
@@ -88,78 +75,27 @@ class VisionModel:
         Returns:
             Model's text response
         """
-        if self.model is None or self.processor is None:
-            raise RuntimeError("Model not loaded. Call load() first.")
+        b64_image = base64.b64encode(jpeg_data).decode('utf-8')
 
-        try:
-            # Decode JPEG to PIL Image
-            image = Image.open(io.BytesIO(jpeg_data))
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+                    },
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
 
-            # Prepare messages for the model
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": prompt}
-                    ]
-                }
-            ]
-
-            # Process inputs
-            text = self.processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-
-            image_inputs, video_inputs = process_vision_info(messages)
-
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt"
-            )
-            inputs = inputs.to(self.device)
-
-            # Generate response
-            start_time = time.time()
-
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=config.max_new_tokens,
-                    temperature=config.temperature,
-                    do_sample=True
-                )
-
-            # Decode response
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            response = self.processor.batch_decode(
-                generated_ids_trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False
-            )[0]
-
-            inference_time = time.time() - start_time
-
-            if config.log_inference_time:
-                logger.info(f"Inference time: {inference_time:.3f}s")
-
-            return response
-
-        except Exception as e:
-            logger.error(f"Error processing frame: {e}")
-            raise
+        return self._call_api(messages)
 
     def process_with_history(self,
-                            jpeg_data: bytes,
-                            prompt: str,
-                            max_history: int = 5) -> str:
+                             jpeg_data: bytes,
+                             prompt: str,
+                             max_history: int = 5) -> str:
         """
         Process a frame with conversation history for context.
 
@@ -171,85 +107,81 @@ class VisionModel:
         Returns:
             Model's text response
         """
-        if self.model is None or self.processor is None:
+        b64_image = base64.b64encode(jpeg_data).decode('utf-8')
+
+        # Build messages with text-only history
+        messages = []
+        history_to_use = self.conversation_history[-max_history:]
+        for hist_prompt, hist_response in history_to_use:
+            messages.append({"role": "user", "content": hist_prompt})
+            messages.append({"role": "assistant", "content": hist_response})
+
+        # Current message with image
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+                },
+                {"type": "text", "text": prompt}
+            ]
+        })
+
+        response = self._call_api(messages)
+
+        # Update history
+        self.conversation_history.append((prompt, response))
+        if len(self.conversation_history) > max_history * 2:
+            self.conversation_history = self.conversation_history[-max_history * 2:]
+
+        return response
+
+    def _call_api(self, messages: list, max_tokens: Optional[int] = None) -> str:
+        """
+        Make an API call to llama-swap.
+
+        Returns the response content string, or a safe stop message on failure.
+        """
+        if self.session is None:
             raise RuntimeError("Model not loaded. Call load() first.")
 
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens or config.max_new_tokens,
+            "temperature": config.temperature,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        start_time = time.time()
+
         try:
-            # Decode JPEG to PIL Image
-            image = Image.open(io.BytesIO(jpeg_data))
-
-            # Build messages with history
-            messages = []
-
-            # Add relevant history (without images to save memory)
-            history_to_use = self.conversation_history[-max_history:]
-            for hist_prompt, hist_response in history_to_use:
-                messages.append({"role": "user", "content": [{"type": "text", "text": hist_prompt}]})
-                messages.append({"role": "assistant", "content": [{"type": "text", "text": hist_response}]})
-
-            # Add current message with image
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": prompt}
-                ]
-            })
-
-            # Process inputs
-            text = self.processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
+            resp = self.session.post(
+                self.api_url,
+                json=payload,
+                timeout=config.inference_timeout
             )
+            resp.raise_for_status()
 
-            image_inputs, video_inputs = process_vision_info(messages)
-
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt"
-            )
-            inputs = inputs.to(self.device)
-
-            # Generate response
-            start_time = time.time()
-
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=config.max_new_tokens,
-                    temperature=config.temperature,
-                    do_sample=True
-                )
-
-            # Decode response
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            response = self.processor.batch_decode(
-                generated_ids_trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False
-            )[0]
+            result = resp.json()
+            content = result["choices"][0]["message"]["content"]
 
             inference_time = time.time() - start_time
-
             if config.log_inference_time:
-                logger.info(f"Inference time: {inference_time:.3f}s")
+                usage = result.get("usage", {})
+                tokens = usage.get("completion_tokens", "?")
+                logger.info(f"Inference: {inference_time:.3f}s, tokens: {tokens}")
 
-            # Update history
-            self.conversation_history.append((prompt, response))
-            if len(self.conversation_history) > max_history * 2:
-                self.conversation_history = self.conversation_history[-max_history * 2:]
+            return content
 
-            return response
+        except requests.Timeout:
+            logger.error(f"llama-swap timeout after {config.inference_timeout}s")
+            return "OBSERVATION: Request timed out\nASSESSMENT: Cannot process\nCOMMAND: 0,0,2,2,0\nREASONING: Timeout - stopping for safety"
 
-        except Exception as e:
-            logger.error(f"Error processing frame with history: {e}")
-            raise
+        except requests.RequestException as e:
+            logger.error(f"llama-swap request failed: {e}")
+            return "OBSERVATION: API error\nASSESSMENT: Cannot process\nCOMMAND: 0,0,2,2,0\nREASONING: API error - stopping for safety"
 
     def clear_history(self) -> None:
         """Clear conversation history."""
@@ -257,16 +189,8 @@ class VisionModel:
         logger.info("Conversation history cleared")
 
     def unload(self) -> None:
-        """Unload model to free memory."""
-        if self.model is not None:
-            del self.model
-            self.model = None
-        if self.processor is not None:
-            del self.processor
-            self.processor = None
-
-        # Clear CUDA cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        logger.info("Model unloaded")
+        """Close HTTP session."""
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+        logger.info("Vision model session closed")

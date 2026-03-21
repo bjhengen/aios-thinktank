@@ -9,7 +9,7 @@ import time
 from typing import Optional, Callable
 
 from shared.protocol import (
-    FrameProtocol, MotorCommand, COMMAND_SIZE
+    FrameProtocol, MotorCommand, SensorData, COMMAND_SIZE
 )
 from shared.utils import setup_logging
 from pi.config import config
@@ -81,12 +81,14 @@ class NetworkClient:
                 pass
             self.socket = None
 
-    def send_frame(self, jpeg_data: bytes) -> bool:
+    def send_frame(self, jpeg_data: bytes,
+                   sensor_data: SensorData = None) -> bool:
         """
-        Send a camera frame to the server.
+        Send a camera frame to the server, optionally with sensor data.
 
         Args:
             jpeg_data: JPEG-encoded image data
+            sensor_data: Optional ultrasonic sensor readings
 
         Returns:
             True if sent successfully
@@ -96,13 +98,17 @@ class NetworkClient:
             return False
 
         try:
-            # Encode frame with protocol
-            frame_packet = FrameProtocol.encode_frame(jpeg_data)
+            if sensor_data:
+                frame_packet = FrameProtocol.encode_frame_with_sensors(
+                    jpeg_data, sensor_data
+                )
+            else:
+                frame_packet = FrameProtocol.encode_frame(jpeg_data)
 
-            # Send to server
             self.socket.sendall(frame_packet)
 
-            logger.debug(f"Sent frame: {len(jpeg_data)} bytes")
+            logger.debug(f"Sent frame: {len(jpeg_data)} bytes"
+                         f"{' +sensors' if sensor_data else ''}")
             return True
 
         except Exception as e:

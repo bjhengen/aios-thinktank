@@ -2,15 +2,16 @@
 Motor controller for Raspberry Pi robot car.
 
 Handles direct GPIO control of 4 DC motors through 2x L298N drivers.
+Includes dead rear-left motor compensation with per-motor speed control.
 """
 
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 try:
     import RPi.GPIO as GPIO
 except ImportError:
-    # Allow imports on non-Pi systems for development
     GPIO = None
 
 from shared.protocol import MotorCommand, Direction
@@ -21,26 +22,29 @@ from pi.config import config
 logger = setup_logging(__name__)
 
 
+@dataclass
+class CompensatedCommand:
+    """Per-motor speeds and directions after compensation."""
+    fl_speed: int
+    fl_dir: Direction
+    fr_speed: int
+    fr_dir: Direction
+    rl_speed: int
+    rl_dir: Direction
+    rr_speed: int
+    rr_dir: Direction
+    duration_ms: int
+
+
 class MotorController:
     """
     Controls 4 DC motors using GPIO pins.
 
-    This assumes mecanum wheel configuration:
-    - Front Left (FL)
-    - Front Right (FR)
-    - Rear Left (RL)
-    - Rear Right (RR)
-
-    For simplicity, we group them as "left" (FL + RL) and "right" (FR + RR).
+    Mecanum wheel configuration: FL, FR, RL, RR.
+    Supports dead-RL motor compensation with per-motor speed factors.
     """
 
     def __init__(self, simulate: bool = False):
-        """
-        Initialize motor controller.
-
-        Args:
-            simulate: If True, don't actually use GPIO (for testing)
-        """
         self.simulate = simulate or (GPIO is None)
         self.pwm_objects = {}
         self.last_command_time = time.time()
@@ -55,6 +59,8 @@ class MotorController:
         """Set up GPIO pins for motor control."""
         if self.simulate:
             logger.info("Simulated GPIO setup complete")
+            if config.rl_motor_dead:
+                logger.info("RL motor compensation ENABLED (dead motor)")
             self.initialized = True
             return
 
@@ -62,11 +68,9 @@ class MotorController:
             raise RuntimeError("RPi.GPIO not available - are you on a Raspberry Pi?")
 
         try:
-            # Set GPIO mode
             GPIO.setmode(GPIO.BCM)
             GPIO.setwarnings(False)
 
-            # Setup motor control pins
             pins = [
                 config.fl_forward, config.fl_backward,
                 config.fr_forward, config.fr_backward,
@@ -78,7 +82,6 @@ class MotorController:
                 GPIO.setup(pin, GPIO.OUT)
                 GPIO.output(pin, GPIO.LOW)
 
-            # Setup PWM pins
             pwm_pins = [config.fl_pwm, config.fr_pwm, config.rl_pwm, config.rr_pwm]
             for pin in pwm_pins:
                 GPIO.setup(pin, GPIO.OUT)
@@ -87,6 +90,8 @@ class MotorController:
                 self.pwm_objects[pin] = pwm
 
             self.initialized = True
+            if config.rl_motor_dead:
+                logger.info("RL motor compensation ENABLED (dead motor)")
             logger.info("GPIO setup complete")
 
         except Exception as e:
@@ -99,88 +104,111 @@ class MotorController:
             return
 
         logger.info("Cleaning up GPIO")
-
-        # Stop all PWM
         for pwm in self.pwm_objects.values():
             pwm.stop()
-
-        # Cleanup GPIO
         if GPIO:
             GPIO.cleanup()
-
         self.initialized = False
+
+    def _compensate_command(self, command: MotorCommand) -> CompensatedCommand:
+        """
+        Apply dead-RL motor compensation to produce per-motor speeds.
+
+        When rl_motor_dead is False, all motors get their side's speed directly.
+        """
+        if not config.rl_motor_dead:
+            return CompensatedCommand(
+                fl_speed=command.left_speed, fl_dir=command.left_dir,
+                fr_speed=command.right_speed, fr_dir=command.right_dir,
+                rl_speed=command.left_speed, rl_dir=command.left_dir,
+                rr_speed=command.right_speed, rr_dir=command.right_dir,
+                duration_ms=command.duration_ms,
+            )
+
+        fl = min(255, int(command.left_speed * config.comp_fl))
+        rl = min(255, int(command.left_speed * config.comp_rl))
+        fr = min(255, int(command.right_speed * config.comp_fr))
+        rr = min(255, int(command.right_speed * config.comp_rr))
+
+        return CompensatedCommand(
+            fl_speed=fl, fl_dir=command.left_dir,
+            fr_speed=fr, fr_dir=command.right_dir,
+            rl_speed=rl, rl_dir=command.left_dir,
+            rr_speed=rr, rr_dir=command.right_dir,
+            duration_ms=command.duration_ms,
+        )
 
     def execute_command(self, command: MotorCommand) -> None:
         """
-        Execute a motor command.
+        Execute a motor command with per-motor compensation.
 
-        Args:
-            command: MotorCommand to execute
-
-        If duration_ms > 0, the command runs for that duration then stops automatically.
-        If duration_ms == 0, the command runs until the next command or watchdog timeout.
+        If duration_ms > 0, runs for that duration then stops.
+        If duration_ms == 0, runs until next command or watchdog timeout.
         """
         if not self.initialized:
             logger.error("Motor controller not initialized")
             return
 
         self.last_command_time = time.time()
+        comp = self._compensate_command(command)
 
         if self.simulate:
-            logger.info(f"[SIM] Executing: {command}")
-            if command.duration_ms > 0:
-                time.sleep(command.duration_ms / 1000.0)
+            logger.info(f"[SIM] Executing: FL={comp.fl_speed} FR={comp.fr_speed} "
+                        f"RL={comp.rl_speed} RR={comp.rr_speed} "
+                        f"dirs={comp.fl_dir.name},{comp.fr_dir.name} "
+                        f"dur={comp.duration_ms}ms")
+            if comp.duration_ms > 0:
+                time.sleep(comp.duration_ms / 1000.0)
                 logger.info("[SIM] Duration complete, stopping")
             return
 
         try:
-            # Control left side (FL + RL)
-            self._set_motor_group(
-                forward_pins=[config.fl_forward, config.rl_forward],
-                backward_pins=[config.fl_backward, config.rl_backward],
-                pwm_pins=[config.fl_pwm, config.rl_pwm],
-                speed=command.left_speed,
-                direction=command.left_dir
-            )
+            self._set_single_motor(config.fl_forward, config.fl_backward,
+                                   config.fl_pwm, comp.fl_speed, comp.fl_dir)
+            self._set_single_motor(config.fr_forward, config.fr_backward,
+                                   config.fr_pwm, comp.fr_speed, comp.fr_dir)
+            self._set_single_motor(config.rl_forward, config.rl_backward,
+                                   config.rl_pwm, comp.rl_speed, comp.rl_dir)
+            self._set_single_motor(config.rr_forward, config.rr_backward,
+                                   config.rr_pwm, comp.rr_speed, comp.rr_dir)
 
-            # Control right side (FR + RR)
-            self._set_motor_group(
-                forward_pins=[config.fr_forward, config.rr_forward],
-                backward_pins=[config.fr_backward, config.rr_backward],
-                pwm_pins=[config.fr_pwm, config.rr_pwm],
-                speed=command.right_speed,
-                direction=command.right_dir
-            )
+            logger.debug(f"Executed: FL={comp.fl_speed} FR={comp.fr_speed} "
+                         f"RL={comp.rl_speed} RR={comp.rr_speed}")
 
-            logger.debug(f"Executed: {command}")
-
-            # Handle duration-based execution
-            if command.duration_ms > 0:
-                time.sleep(command.duration_ms / 1000.0)
+            if comp.duration_ms > 0:
+                time.sleep(comp.duration_ms / 1000.0)
                 self._stop_all_motors()
-                logger.debug(f"Duration complete ({command.duration_ms}ms), stopped")
+                logger.debug(f"Duration complete ({comp.duration_ms}ms), stopped")
 
         except Exception as e:
             logger.error(f"Error executing command: {e}")
             self.emergency_stop()
 
-    def _set_motor_group(self,
-                        forward_pins: list,
-                        backward_pins: list,
-                        pwm_pins: list,
-                        speed: int,
-                        direction: Direction) -> None:
-        """
-        Set a group of motors (e.g., both left wheels).
+    def _set_single_motor(self, fwd_pin: int, bwd_pin: int,
+                          pwm_pin: int, speed: int, direction: Direction) -> None:
+        """Set a single motor's direction and speed."""
+        if direction == Direction.FORWARD:
+            GPIO.output(fwd_pin, GPIO.HIGH)
+            GPIO.output(bwd_pin, GPIO.LOW)
+        elif direction == Direction.BACKWARD:
+            GPIO.output(fwd_pin, GPIO.LOW)
+            GPIO.output(bwd_pin, GPIO.HIGH)
+        else:  # STOP
+            GPIO.output(fwd_pin, GPIO.LOW)
+            GPIO.output(bwd_pin, GPIO.LOW)
+            speed = 0
 
-        Args:
-            forward_pins: GPIO pins for forward direction
-            backward_pins: GPIO pins for backward direction
-            pwm_pins: GPIO pins for PWM speed control
-            speed: Speed value 0-255
-            direction: Direction enum value
-        """
-        # Set direction pins
+        duty_cycle = (speed / 255.0) * 100.0
+        if pwm_pin in self.pwm_objects:
+            self.pwm_objects[pwm_pin].ChangeDutyCycle(duty_cycle)
+
+    def _set_motor_group(self,
+                         forward_pins: list,
+                         backward_pins: list,
+                         pwm_pins: list,
+                         speed: int,
+                         direction: Direction) -> None:
+        """Set a group of motors (used by emergency_stop and test_motors)."""
         if direction == Direction.FORWARD:
             for pin in forward_pins:
                 GPIO.output(pin, GPIO.HIGH)
@@ -191,12 +219,11 @@ class MotorController:
                 GPIO.output(pin, GPIO.LOW)
             for pin in backward_pins:
                 GPIO.output(pin, GPIO.HIGH)
-        else:  # STOP
+        else:
             for pin in forward_pins + backward_pins:
                 GPIO.output(pin, GPIO.LOW)
             speed = 0
 
-        # Set speed via PWM (convert 0-255 to 0-100 duty cycle)
         duty_cycle = (speed / 255.0) * 100.0
         for pin in pwm_pins:
             if pin in self.pwm_objects:
@@ -205,7 +232,6 @@ class MotorController:
     def _stop_all_motors(self) -> None:
         """Stop all motors (internal helper, no warning log)."""
         try:
-            # Set all direction pins LOW
             pins = [
                 config.fl_forward, config.fl_backward,
                 config.fr_forward, config.fr_backward,
@@ -214,8 +240,6 @@ class MotorController:
             ]
             for pin in pins:
                 GPIO.output(pin, GPIO.LOW)
-
-            # Set all PWM to 0
             for pwm in self.pwm_objects.values():
                 pwm.ChangeDutyCycle(0)
         except Exception as e:
@@ -230,7 +254,6 @@ class MotorController:
             return
 
         try:
-            # Set all direction pins LOW
             pins = [
                 config.fl_forward, config.fl_backward,
                 config.fr_forward, config.fr_backward,
@@ -239,20 +262,13 @@ class MotorController:
             ]
             for pin in pins:
                 GPIO.output(pin, GPIO.LOW)
-
-            # Set all PWM to 0
             for pwm in self.pwm_objects.values():
                 pwm.ChangeDutyCycle(0)
-
         except Exception as e:
             logger.error(f"Error during emergency stop: {e}")
 
     def check_watchdog(self) -> None:
-        """
-        Check if we've received commands recently.
-
-        If not, stop motors for safety.
-        """
+        """Stop motors if no command received within watchdog timeout."""
         if not self.initialized:
             return
 
@@ -260,14 +276,10 @@ class MotorController:
         if time_since_command > config.watchdog_timeout:
             logger.warning(f"Watchdog timeout ({time_since_command:.1f}s) - stopping motors")
             self.emergency_stop()
-            self.last_command_time = time.time()  # Reset to avoid spam
+            self.last_command_time = time.time()
 
     def test_motors(self) -> None:
-        """
-        Run a test sequence to verify all motors work.
-
-        Each motor group runs briefly in each direction.
-        """
+        """Run a test sequence to verify motors work."""
         logger.info("Starting motor test sequence...")
 
         if not self.initialized:

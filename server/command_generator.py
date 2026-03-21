@@ -11,7 +11,7 @@ import re
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
-from shared.protocol import MotorCommand, Direction
+from shared.protocol import MotorCommand, Direction, SensorData
 from shared.utils import setup_logging
 
 
@@ -120,13 +120,44 @@ class CommandGenerator:
 
         return parsed
 
-    def build_prompt(self, goal: str, include_examples: bool = True) -> str:
+    def _format_sensor_section(self, sensor_data: SensorData) -> str:
+        """Format sensor data as a prompt section with proximity warnings."""
+        distances = sensor_data.to_dict()
+        has_any = any(v is not None for v in distances.values())
+        if not has_any:
+            return ""
+
+        labels = {
+            'fc': 'Front-Center',
+            'fl': 'Front-Left',
+            'fr': 'Front-Right',
+            'rl': 'Rear-Left',
+            'rr': 'Rear-Right',
+        }
+
+        lines = ["\nSENSOR DATA (ultrasonic distances):"]
+        for key, label in labels.items():
+            cm = distances[key]
+            if cm is None:
+                lines.append(f"  {label}: no reading")
+            elif cm < 15:
+                lines.append(f"  {label}: {cm} cm  *** VERY CLOSE ***")
+            elif cm < 30:
+                lines.append(f"  {label}: {cm} cm  (caution)")
+            else:
+                lines.append(f"  {label}: {cm} cm")
+        lines.append("NOTE: Sensors detect obstacles the camera may miss (e.g. table legs, low furniture).")
+        return '\n'.join(lines)
+
+    def build_prompt(self, goal: str, include_examples: bool = True,
+                     sensor_data: SensorData = None) -> str:
         """
         Build a prompt for the vision model.
 
         Args:
             goal: High-level goal (e.g., "find the kitchen")
             include_examples: Whether to include example commands
+            sensor_data: Optional ultrasonic sensor readings
 
         Returns:
             Formatted prompt string
@@ -173,6 +204,10 @@ CALIBRATION:
 - Use 1000-3000ms duration for most moves
 - Carpet needs more power (250) than tile (190)
 """
+
+        # Add sensor data if available
+        if sensor_data:
+            prompt += self._format_sensor_section(sensor_data)
 
         if self.state.last_command:
             prompt += f"\nPREVIOUS COMMAND: {self._command_to_string(self.state.last_command)}"

@@ -15,12 +15,12 @@ class ServerConfig:
     port: int = 5555
     max_connections: int = 1  # Only one car at a time for now
 
-    # AI Model settings
-    model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"  # Upgraded from Qwen2-VL
-    model_device: str = "cuda"  # Use GPU
-    max_context_length: int = 128000  # 128k context window
+    # llama-swap settings
+    llama_swap_url: str = "http://localhost:8200"
+    model_name: str = "qwen3.5-27b"
     temperature: float = 0.7
-    max_new_tokens: int = 250  # Need room for OBSERVATION + ASSESSMENT + COMMAND + REASONING
+    max_new_tokens: int = 200  # Enough for proper command format
+    inference_timeout: float = 30.0  # llama-swap needs time for cold load
 
     # Vision settings
     target_fps: int = 10  # Target frame processing rate
@@ -28,7 +28,6 @@ class ServerConfig:
     frame_height: int = 480
 
     # Control settings
-    inference_timeout: float = 2.0  # Max time for AI inference
     command_history_size: int = 100  # Number of past commands to keep
     emergency_stop_on_error: bool = True
 
