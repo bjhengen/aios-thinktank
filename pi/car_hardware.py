@@ -116,21 +116,40 @@ class CarHardware:
 
         stop_dist_mm = int(config.collision_stop_distance * 10)
 
-        # Check forward commands against front sensors
+        is_moving = (command.left_dir != Direction.STOP or
+                     command.right_dir != Direction.STOP)
+
+        if not is_moving:
+            return False
+
+        # Check front sensors for any command with forward component
         if command.left_dir == Direction.FORWARD or command.right_dir == Direction.FORWARD:
             front_readings = [sensor_data.fl, sensor_data.fr]
             for dist_mm in front_readings:
                 if 0 < dist_mm < stop_dist_mm:
-                    logger.warning(f"SENSOR BLOCK: Front obstacle at {dist_mm/10:.1f}cm — blocking forward")
+                    logger.warning(f"SENSOR BLOCK: Front obstacle at {dist_mm/10:.1f}cm — blocking movement")
                     self.motors.emergency_stop()
                     return True
 
-        # Check backward commands against rear sensors
+        # Check rear sensors for any command with backward component
         if command.left_dir == Direction.BACKWARD or command.right_dir == Direction.BACKWARD:
             rear_readings = [sensor_data.rl, sensor_data.rr]
             for dist_mm in rear_readings:
                 if 0 < dist_mm < stop_dist_mm:
-                    logger.warning(f"SENSOR BLOCK: Rear obstacle at {dist_mm/10:.1f}cm — blocking backward")
+                    logger.warning(f"SENSOR BLOCK: Rear obstacle at {dist_mm/10:.1f}cm — blocking movement")
+                    self.motors.emergency_stop()
+                    return True
+
+        # For rotations (opposite directions), check ALL sensors
+        is_rotation = (command.left_dir != command.right_dir and
+                       command.left_dir != Direction.STOP and
+                       command.right_dir != Direction.STOP)
+        if is_rotation:
+            all_readings = [sensor_data.fl, sensor_data.fr,
+                            sensor_data.rl, sensor_data.rr]
+            for dist_mm in all_readings:
+                if 0 < dist_mm < stop_dist_mm:
+                    logger.warning(f"SENSOR BLOCK: Obstacle at {dist_mm/10:.1f}cm — blocking rotation")
                     self.motors.emergency_stop()
                     return True
 

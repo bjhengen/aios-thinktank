@@ -71,6 +71,35 @@ class CommandGenerator:
         self.state = ControlState()
         logger.info("CommandGenerator initialized")
 
+    # Safety limits enforced in code (not prompt-dependent)
+    MAX_ROTATION_SPEED = 160   # Cap rotation speed to prevent wall collisions
+    MAX_FORWARD_SPEED = 235    # Cap forward speed (carpet max)
+    MAX_DURATION_MS = 2000     # Cap duration so car re-evaluates frequently
+
+    def _is_rotation(self, command: MotorCommand) -> bool:
+        """Check if a command is a rotation (opposite directions)."""
+        return (command.left_dir != command.right_dir and
+                command.left_dir != Direction.STOP and
+                command.right_dir != Direction.STOP)
+
+    def _sanitize_command(self, command: MotorCommand) -> MotorCommand:
+        """Enforce speed and duration limits on AI-generated commands."""
+        speed_cap = self.MAX_ROTATION_SPEED if self._is_rotation(command) else self.MAX_FORWARD_SPEED
+        left_speed = min(command.left_speed, speed_cap)
+        right_speed = min(command.right_speed, speed_cap)
+        duration_ms = min(command.duration_ms, self.MAX_DURATION_MS) if command.duration_ms > 0 else 0
+
+        if left_speed != command.left_speed or right_speed != command.right_speed:
+            logger.debug(f"Speed capped: {command.left_speed},{command.right_speed} → {left_speed},{right_speed}")
+
+        return MotorCommand(
+            left_speed=left_speed,
+            right_speed=right_speed,
+            left_dir=command.left_dir,
+            right_dir=command.right_dir,
+            duration_ms=duration_ms,
+        )
+
     def _is_blind_observation(self, observation: str) -> bool:
         """Check if observation indicates poor visibility."""
         obs_lower = observation.lower()
@@ -314,6 +343,10 @@ CALIBRATION:
                     logger.info(f"Fallback parsing succeeded: {command}")
                 except Exception as e:
                     logger.error(f"Fallback parsing failed: {e}")
+
+        # Sanitize command: cap speeds and durations for safety
+        if command is not None:
+            command = self._sanitize_command(command)
 
         return ParsedResponse(
             command=command,
