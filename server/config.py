@@ -17,7 +17,7 @@ class ServerConfig:
 
     # llama-swap settings
     llama_swap_url: str = "http://localhost:8200"
-    model_name: str = "qwen3.5-27b"
+    model_name: str = "qwen3.5-35b"
     temperature: float = 0.7
     max_new_tokens: int = 200  # Enough for proper command format
     inference_timeout: float = 30.0  # llama-swap needs time for cold load
@@ -37,6 +37,10 @@ class ServerConfig:
     log_inference_time: bool = True
     save_debug_frames: bool = True
     debug_frame_dir: str = "./debug_frames"
+
+    # Mapping settings
+    map_file: str = "./map_data.json"
+    enable_mapping: bool = True
 
     def __post_init__(self):
         """Validate configuration after initialization."""
