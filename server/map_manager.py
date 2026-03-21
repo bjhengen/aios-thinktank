@@ -154,6 +154,53 @@ class MapManager:
         """Get IDs of nodes reachable from this node."""
         return [e.to_id for e in self.edges if e.from_id == node_id]
 
+    def get_path(self, from_id: str, to_id: str) -> Optional[List[MapEdge]]:
+        """BFS to find a route between two nodes. Returns list of edges or None."""
+        if from_id not in self.nodes or to_id not in self.nodes:
+            return None
+        if from_id == to_id:
+            return []
+
+        visited = {from_id}
+        queue = deque([(from_id, [])])
+
+        while queue:
+            current, path = queue.popleft()
+            for edge in self.edges:
+                if edge.from_id == current and edge.to_id not in visited:
+                    new_path = path + [edge]
+                    if edge.to_id == to_id:
+                        return new_path
+                    visited.add(edge.to_id)
+                    queue.append((edge.to_id, new_path))
+
+        return None  # No route found
+
+    @staticmethod
+    def get_reverse_breadcrumb(breadcrumb: List[dict]) -> List[dict]:
+        """Reverse a breadcrumb trail for backtracking.
+
+        Reverses order and flips forward/backward directions.
+        Direction mapping: 0 (BACKWARD) <-> 1 (FORWARD), 2 (STOP) stays 2.
+        """
+        def flip_dir(d: int) -> int:
+            if d == 0:
+                return 1
+            if d == 1:
+                return 0
+            return 2  # STOP stays STOP
+
+        reversed_crumbs = []
+        for cmd in reversed(breadcrumb):
+            reversed_crumbs.append({
+                "left_speed": cmd["left_speed"],
+                "right_speed": cmd["right_speed"],
+                "left_dir": flip_dir(cmd["left_dir"]),
+                "right_dir": flip_dir(cmd["right_dir"]),
+                "duration_ms": cmd["duration_ms"],
+            })
+        return reversed_crumbs
+
     def get_known_locations(self) -> List[str]:
         """Get list of all known node IDs."""
         return list(self.nodes.keys())

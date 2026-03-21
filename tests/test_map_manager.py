@@ -113,6 +113,64 @@ def test_load_missing_file():
     assert len(mm.nodes) == 0
 
 
+# ---------------------------------------------------------------------------
+# Task 4: BFS Pathfinding and Breadcrumb Reversal
+# ---------------------------------------------------------------------------
+
+def test_get_path_direct():
+    mm = MapManager()
+    mm.add_node("a", "A", [], "tile")
+    mm.add_node("b", "B", [], "tile")
+    crumbs = [{"left_speed": 190, "right_speed": 190,
+               "left_dir": 1, "right_dir": 1, "duration_ms": 2000}]
+    mm.add_edge("a", "b", crumbs)
+    path = mm.get_path("a", "b")
+    assert len(path) == 1
+    assert path[0].from_id == "a"
+    assert path[0].to_id == "b"
+
+
+def test_get_path_multi_hop():
+    mm = MapManager()
+    for n in ["a", "b", "c"]:
+        mm.add_node(n, n.upper(), [], "tile")
+    mm.add_edge("a", "b", [{"left_speed": 190, "right_speed": 190,
+                             "left_dir": 1, "right_dir": 1, "duration_ms": 1000}])
+    mm.add_edge("b", "c", [{"left_speed": 190, "right_speed": 190,
+                             "left_dir": 1, "right_dir": 1, "duration_ms": 1000}])
+    path = mm.get_path("a", "c")
+    assert len(path) == 2
+    assert path[0].to_id == "b"
+    assert path[1].to_id == "c"
+
+
+def test_get_path_no_route():
+    mm = MapManager()
+    mm.add_node("a", "A", [], "tile")
+    mm.add_node("b", "B", [], "tile")
+    path = mm.get_path("a", "b")
+    assert path is None
+
+
+def test_reverse_breadcrumb():
+    mm = MapManager()
+    crumbs = [
+        {"left_speed": 190, "right_speed": 190,
+         "left_dir": 1, "right_dir": 1, "duration_ms": 2000},
+        {"left_speed": 230, "right_speed": 230,
+         "left_dir": 0, "right_dir": 1, "duration_ms": 1250},
+    ]
+    reversed_crumbs = mm.get_reverse_breadcrumb(crumbs)
+    # Reversed order, directions flipped (1->0, 0->1, 2->2)
+    assert len(reversed_crumbs) == 2
+    # Second original command becomes first reversed
+    assert reversed_crumbs[0]["left_dir"] == 1   # was 0
+    assert reversed_crumbs[0]["right_dir"] == 0  # was 1
+    # First original command becomes second reversed
+    assert reversed_crumbs[1]["left_dir"] == 0   # was 1
+    assert reversed_crumbs[1]["right_dir"] == 0  # was 1
+
+
 if __name__ == "__main__":
     test_map_node_creation()
     test_map_edge_creation()
@@ -123,4 +181,8 @@ if __name__ == "__main__":
     test_get_neighbors_empty()
     test_save_and_load()
     test_load_missing_file()
-    print("Tasks 1-3 tests passed!")
+    test_get_path_direct()
+    test_get_path_multi_hop()
+    test_get_path_no_route()
+    test_reverse_breadcrumb()
+    print("All map manager tests passed!")
