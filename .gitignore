@@ -56,3 +56,4 @@ Thumbs.db
 .env
 secrets.yaml
 credentials.json
+map_data.json
