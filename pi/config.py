@@ -70,7 +70,7 @@ class PiConfig:
     # Safety settings
     watchdog_timeout: float = 1.0  # Stop motors if no command for this long
     emergency_stop_gpio: int = 21  # GPIO pin for emergency stop button (optional)
-    collision_stop_distance: float = 15.0  # cm - emergency stop if obstacle closer
+    collision_stop_distance: float = 20.0  # cm - emergency stop if obstacle closer
 
     # Logging
     log_level: str = "INFO"
