@@ -49,6 +49,7 @@ class ParsedResponse:
     observation: str = ""
     assessment: str = ""
     reasoning: str = ""
+    location: str = ""
 
 
 class CommandGenerator:
@@ -140,13 +141,15 @@ class CommandGenerator:
             cm = distances[key]
             if cm is None:
                 lines.append(f"  {label}: no reading")
-            elif cm < 15:
-                lines.append(f"  {label}: {cm} cm  *** VERY CLOSE ***")
-            elif cm < 30:
+            elif cm < 20:
+                lines.append(f"  {label}: {cm} cm  *** STOP — OBSTACLE IMMINENT ***")
+            elif cm < 35:
+                lines.append(f"  {label}: {cm} cm  ** SLOW DOWN — obstacle close **")
+            elif cm < 60:
                 lines.append(f"  {label}: {cm} cm  (caution)")
             else:
                 lines.append(f"  {label}: {cm} cm")
-        lines.append("NOTE: Sensors detect obstacles the camera may miss (e.g. table legs, low furniture).")
+        lines.append("NOTE: Sensors detect obstacles the camera may miss (e.g. table legs, low furniture). STOP and TURN when any sensor reads under 25cm.")
         return '\n'.join(lines)
 
     def build_prompt(self, goal: str, include_examples: bool = True,
@@ -243,9 +246,15 @@ CALIBRATION:
             observation = obs_match.group(1).strip()
 
         # Extract assessment
-        assess_match = re.search(r'ASSESSMENT:\s*(.+?)(?=\n(?:COMMAND|REASONING):|$)', response, re.IGNORECASE | re.DOTALL)
+        assess_match = re.search(r'ASSESSMENT:\s*(.+?)(?=\n(?:LOCATION|COMMAND|REASONING):|$)', response, re.IGNORECASE | re.DOTALL)
         if assess_match:
             assessment = assess_match.group(1).strip()
+
+        # Extract location
+        location = ""
+        loc_match = re.search(r'LOCATION:\s*(\S+)', response, re.IGNORECASE)
+        if loc_match:
+            location = loc_match.group(1).strip().lower()
 
         # Extract command line - expects 5 values with duration_ms
         command_match = re.search(r'COMMAND:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', response)
@@ -302,7 +311,8 @@ CALIBRATION:
             command=command,
             observation=observation,
             assessment=assessment,
-            reasoning=reasoning
+            reasoning=reasoning,
+            location=location
         )
 
     def update_state(self, parsed: ParsedResponse) -> None:
