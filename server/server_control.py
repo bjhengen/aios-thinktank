@@ -276,6 +276,85 @@ class ServerController:
                 conn.send_command(MotorCommand.stop())
                 logger.info("Sent final stop command")
 
+    def run_goto(self, target: str) -> None:
+        """Navigate to a named location using the map."""
+        if not self.map_manager:
+            logger.error("Mapping not enabled")
+            return
+
+        logger.info(f"Navigating to: {target}")
+
+        # First, need to know where we are — run one AI frame
+        # to get current location, then plan path
+        path = None
+        current = None
+        conn = None
+
+        try:
+            while self.running:
+                conn = self.network_server.get_active_connection()
+                if not conn:
+                    time.sleep(1.0)
+                    continue
+
+                result = conn.get_frame(timeout=0.5)
+                if not result:
+                    continue
+
+                sensor_data, frame_data = result
+                known_locs = self.map_manager.get_known_locations()
+                prompt = self.command_generator.build_prompt(
+                    f"Identify your current location",
+                    sensor_data=sensor_data,
+                    known_locations=known_locs)
+
+                response = self.vision_model.process_frame(frame_data, prompt)
+                parsed = self.command_generator.parse_response(response)
+
+                if not parsed.location or parsed.location == "unknown":
+                    logger.warning("Cannot determine current location, retrying...")
+                    continue
+
+                current = parsed.location
+                logger.info(f"Current location: {current}")
+
+                path = self.map_manager.get_path(current, target)
+                if path is None:
+                    logger.error(f"No route from {current} to {target}")
+                    return
+
+                logger.info(f"Route: {' → '.join(e.from_id for e in path)} → {target}")
+                break
+
+            # Execute breadcrumb trail for each edge
+            if path is not None:
+                for edge in path:
+                    logger.info(f"Traversing: {edge.from_id} → {edge.to_id}")
+                    for cmd_dict in edge.breadcrumb:
+                        command = MotorCommand(
+                            left_speed=cmd_dict["left_speed"],
+                            right_speed=cmd_dict["right_speed"],
+                            left_dir=Direction(cmd_dict["left_dir"]),
+                            right_dir=Direction(cmd_dict["right_dir"]),
+                            duration_ms=cmd_dict["duration_ms"],
+                        )
+                        conn = self.network_server.get_active_connection()
+                        if conn:
+                            conn.send_command(command)
+                        if command.duration_ms > 0:
+                            time.sleep(command.duration_ms / 1000.0 + 0.2)
+
+                    logger.info(f"Arrived at: {edge.to_id}")
+
+                logger.info(f"Navigation complete — arrived at {target}")
+
+        except KeyboardInterrupt:
+            logger.info("Navigation interrupted")
+        finally:
+            conn = self.network_server.get_active_connection()
+            if conn:
+                conn.send_command(MotorCommand.stop())
+
 
 def main():
     """Main entry point."""
@@ -311,6 +390,19 @@ def main():
         help=f'Server host (default: {config.host})'
     )
 
+    parser.add_argument(
+        '--goto',
+        type=str,
+        default=None,
+        help='Navigate to a named location on the map'
+    )
+
+    parser.add_argument(
+        '--home',
+        action='store_true',
+        help='Navigate back to starting location (alias for --goto office)'
+    )
+
     args = parser.parse_args()
 
     # Update config
@@ -334,7 +426,11 @@ def main():
         controller.start()
 
         # Run appropriate mode
-        if args.manual:
+        if args.goto:
+            controller.run_goto(args.goto)
+        elif args.home:
+            controller.run_goto("office")
+        elif args.manual:
             controller.run_manual_control()
         else:
             controller.run_ai_control(args.goal)
