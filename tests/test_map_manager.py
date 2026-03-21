@@ -80,6 +80,39 @@ def test_get_neighbors_empty():
     assert mm.get_neighbors("kitchen") == []
 
 
+# ---------------------------------------------------------------------------
+# Task 3: Persistence — save and load
+# ---------------------------------------------------------------------------
+
+def test_save_and_load():
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+
+    try:
+        mm = MapManager(map_file=path)
+        mm.add_node("kitchen", "Kitchen", ["cabinets"], "tile")
+        mm.add_node("hallway", "Hallway", ["mirror"], "tile")
+        mm.add_edge("kitchen", "hallway",
+                    [{"left_speed": 190, "right_speed": 190,
+                      "left_dir": 1, "right_dir": 1, "duration_ms": 2000}])
+        mm.save()
+
+        # Load into fresh instance
+        mm2 = MapManager(map_file=path)
+        mm2.load()
+        assert mm2.get_node("kitchen") is not None
+        assert mm2.get_node("kitchen").label == "Kitchen"
+        assert mm2.get_neighbors("kitchen") == ["hallway"]
+    finally:
+        os.unlink(path)
+
+
+def test_load_missing_file():
+    mm = MapManager(map_file="/tmp/nonexistent_robotcar_map.json")
+    mm.load()  # Should not raise
+    assert len(mm.nodes) == 0
+
+
 if __name__ == "__main__":
     test_map_node_creation()
     test_map_edge_creation()
@@ -88,4 +121,6 @@ if __name__ == "__main__":
     test_add_node_increments_visit()
     test_add_edge()
     test_get_neighbors_empty()
-    print("Tasks 1-2 tests passed!")
+    test_save_and_load()
+    test_load_missing_file()
+    print("Tasks 1-3 tests passed!")

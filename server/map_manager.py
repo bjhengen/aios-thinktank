@@ -72,11 +72,35 @@ class MapManager:
 
     def load(self) -> None:
         """Load map from JSON file. No-op if file doesn't exist."""
-        pass
+        try:
+            with open(self.map_file, 'r') as f:
+                data = json.load(f)
+            self.nodes = {
+                k: MapNode.from_dict(v)
+                for k, v in data.get("nodes", {}).items()
+            }
+            self.edges = [
+                MapEdge.from_dict(e)
+                for e in data.get("edges", [])
+            ]
+            logger.info(f"Loaded map: {len(self.nodes)} nodes, {len(self.edges)} edges")
+        except FileNotFoundError:
+            logger.info(f"No map file found at {self.map_file}, starting fresh")
+        except Exception as e:
+            logger.error(f"Error loading map: {e}")
 
     def save(self) -> None:
         """Save map to JSON file."""
-        pass
+        data = {
+            "nodes": {k: v.to_dict() for k, v in self.nodes.items()},
+            "edges": [e.to_dict() for e in self.edges],
+        }
+        try:
+            with open(self.map_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"Saved map: {len(self.nodes)} nodes, {len(self.edges)} edges")
+        except Exception as e:
+            logger.error(f"Error saving map: {e}")
 
     def add_node(self, id: str, label: str,
                  landmarks: List[str] = None,
