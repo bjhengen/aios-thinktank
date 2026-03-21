@@ -77,3 +77,59 @@ class MapManager:
     def save(self) -> None:
         """Save map to JSON file."""
         pass
+
+    def add_node(self, id: str, label: str,
+                 landmarks: List[str] = None,
+                 floor_type: str = "unknown") -> MapNode:
+        """Add or update a node. Increments visit_count if it exists."""
+        if id in self.nodes:
+            self.nodes[id].visit_count += 1
+            self.nodes[id].last_visited = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if landmarks:
+                # Merge new landmarks
+                existing = set(self.nodes[id].landmarks)
+                for lm in landmarks:
+                    existing.add(lm)
+                self.nodes[id].landmarks = list(existing)
+            return self.nodes[id]
+
+        node = MapNode(
+            id=id, label=label,
+            landmarks=landmarks or [],
+            floor_type=floor_type,
+            visit_count=1,
+            last_visited=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        self.nodes[id] = node
+        logger.info(f"New map node: {id} ({label})")
+        return node
+
+    def get_node(self, id: str) -> Optional[MapNode]:
+        """Get a node by ID, or None if not found."""
+        return self.nodes.get(id)
+
+    def add_edge(self, from_id: str, to_id: str,
+                 breadcrumb: List[dict]) -> MapEdge:
+        """Record a transition between two nodes."""
+        # Check if edge already exists, update breadcrumb
+        for edge in self.edges:
+            if edge.from_id == from_id and edge.to_id == to_id:
+                edge.breadcrumb = breadcrumb  # Use latest recording
+                edge.traversal_count += 1
+                return edge
+
+        edge = MapEdge(
+            from_id=from_id, to_id=to_id,
+            breadcrumb=breadcrumb, traversal_count=1,
+        )
+        self.edges.append(edge)
+        logger.info(f"New map edge: {from_id} -> {to_id} ({len(breadcrumb)} commands)")
+        return edge
+
+    def get_neighbors(self, node_id: str) -> List[str]:
+        """Get IDs of nodes reachable from this node."""
+        return [e.to_id for e in self.edges if e.from_id == node_id]
+
+    def get_known_locations(self) -> List[str]:
+        """Get list of all known node IDs."""
+        return list(self.nodes.keys())
