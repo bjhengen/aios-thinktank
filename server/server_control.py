@@ -19,8 +19,9 @@ import argparse
 from server.vision_model import VisionModel
 from server.network_server import NetworkServer
 from server.command_generator import CommandGenerator, SimpleCommandParser
+from server.map_manager import MapManager
 from server.config import config
-from shared.protocol import MotorCommand
+from shared.protocol import MotorCommand, Direction
 from shared.utils import setup_logging
 
 
@@ -45,6 +46,10 @@ class ServerController:
         self.command_generator = CommandGenerator()
         self.running = False
 
+        self.map_manager = None
+        if not manual_mode and config.enable_mapping:
+            self.map_manager = MapManager(config.map_file)
+
         logger.info(f"ServerController initialized (manual_mode={manual_mode})")
 
     def start(self) -> None:
@@ -56,6 +61,11 @@ class ServerController:
             logger.info("Loading vision model (this may take a minute)...")
             self.vision_model.load()
 
+        if self.map_manager:
+            self.map_manager.load()
+            logger.info(f"Map loaded: {len(self.map_manager.nodes)} nodes, "
+                        f"{len(self.map_manager.edges)} edges")
+
         # Start network server
         self.network_server.start()
 
@@ -66,6 +76,10 @@ class ServerController:
         """Stop the server and cleanup."""
         logger.info("Stopping server...")
         self.running = False
+
+        if self.map_manager:
+            self.map_manager.save()
+            logger.info("Map saved")
 
         # Stop network server
         self.network_server.stop()
@@ -92,6 +106,9 @@ class ServerController:
 
         frame_count = 0
         start_time = time.time()
+        current_location = ""
+        pending_breadcrumb = []
+        discovering_room = False
 
         try:
             while self.running:
@@ -116,9 +133,11 @@ class ServerController:
                 if any(v is not None for v in distances.values()):
                     logger.debug(f"Sensors: {distances}")
 
-                # Build prompt with sensor data
+                # Build prompt with sensor data and known locations
+                known_locs = self.map_manager.get_known_locations() if self.map_manager else None
                 prompt = self.command_generator.build_prompt(
-                    goal, sensor_data=sensor_data
+                    goal, sensor_data=sensor_data,
+                    known_locations=known_locs
                 )
 
                 # Process frame with AI
@@ -149,9 +168,40 @@ class ServerController:
                     logger.info(f"Command: {parsed.command}")
                     logger.info(f"Reasoning: {parsed.reasoning}")
 
+                    # Map integration
+                    if self.map_manager and parsed.location:
+                        if parsed.location == "unknown" and not discovering_room:
+                            discovering_room = True
+                            logger.info("Unknown location — will ask for room details")
+                        elif parsed.location != "unknown":
+                            discovering_room = False
+                            if parsed.location != current_location:
+                                # Transition detected
+                                if current_location and pending_breadcrumb:
+                                    self.map_manager.add_edge(
+                                        current_location, parsed.location,
+                                        pending_breadcrumb)
+                                    logger.info(f"Map edge: {current_location} → {parsed.location}")
+                                self.map_manager.add_node(
+                                    parsed.location,
+                                    parsed.location.replace("_", " ").title(),
+                                    floor_type=parsed.observation[:50] if parsed.observation else "unknown")
+                                current_location = parsed.location
+                                pending_breadcrumb = []
+                                logger.info(f"Location: {current_location}")
+
                     # Send command to car
                     if conn.send_command(parsed.command):
                         self.command_generator.update_state(parsed)
+                        # Record breadcrumb for map traversal
+                        if self.map_manager and parsed.command:
+                            pending_breadcrumb.append({
+                                "left_speed": parsed.command.left_speed,
+                                "right_speed": parsed.command.right_speed,
+                                "left_dir": parsed.command.left_dir.value,
+                                "right_dir": parsed.command.right_dir.value,
+                                "duration_ms": parsed.command.duration_ms,
+                            })
                     else:
                         logger.error("Failed to send command")
 
