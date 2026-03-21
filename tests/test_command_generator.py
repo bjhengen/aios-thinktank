@@ -38,3 +38,21 @@ COMMAND: 190,190,1,1,2000
 REASONING: Forward"""
     parsed = cg.parse_response(response)
     assert parsed.location == ""
+
+
+def test_prompt_includes_known_locations():
+    cg = CommandGenerator()
+    known = ["office", "hallway", "kitchen"]
+    prompt = cg.build_prompt("Explore", known_locations=known)
+    assert "LOCATION:" in prompt
+    assert "office" in prompt
+    assert "hallway" in prompt
+    assert "kitchen" in prompt
+    assert "unknown" in prompt.lower()
+
+
+def test_prompt_without_locations():
+    cg = CommandGenerator()
+    prompt = cg.build_prompt("Explore")
+    # Should not include LOCATION section when no locations known
+    assert "KNOWN LOCATIONS:" not in prompt

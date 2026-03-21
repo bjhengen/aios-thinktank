@@ -8,7 +8,7 @@ This module handles:
 """
 
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
 from shared.protocol import MotorCommand, Direction, SensorData
@@ -153,7 +153,8 @@ class CommandGenerator:
         return '\n'.join(lines)
 
     def build_prompt(self, goal: str, include_examples: bool = True,
-                     sensor_data: SensorData = None) -> str:
+                     sensor_data: SensorData = None,
+                     known_locations: List[str] = None) -> str:
         """
         Build a prompt for the vision model.
 
@@ -174,6 +175,7 @@ You must LOOK before you ACT. Follow the output format exactly.
 OUTPUT FORMAT (REQUIRED - follow this order):
 OBSERVATION: <describe what you see: floor type, obstacles, walls, openings, landmarks>
 ASSESSMENT: <evaluate: is path clear? which direction leads toward goal? any hazards?>
+LOCATION: <which room/area are you in from the KNOWN LOCATIONS list, or "unknown" if new>
 COMMAND: <left_speed>,<right_speed>,<left_dir>,<right_dir>,<duration_ms>
 REASONING: <brief explanation connecting your observation to your command choice>
 
@@ -211,6 +213,12 @@ CALIBRATION:
         # Add sensor data if available
         if sensor_data:
             prompt += self._format_sensor_section(sensor_data)
+
+        # Add map locations if available
+        if known_locations:
+            locs = ", ".join(known_locations)
+            prompt += f"\nKNOWN LOCATIONS: {locs}"
+            prompt += "\nIdentify your current location from this list, or say 'unknown' if this is a new area."
 
         if self.state.last_command:
             prompt += f"\nPREVIOUS COMMAND: {self._command_to_string(self.state.last_command)}"
