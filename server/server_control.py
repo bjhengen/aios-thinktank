@@ -160,6 +160,10 @@ class ServerController:
                     # Check for blind/collision reflex override
                     parsed = self.command_generator.check_and_override_if_blind(parsed)
 
+                    # Enforce speed/duration limits (catches reflex overrides too)
+                    if parsed.command:
+                        parsed.command = self.command_generator._sanitize_command(parsed.command)
+
                     # Log the structured response
                     if parsed.observation:
                         logger.info(f"Observation: {parsed.observation[:100]}")
@@ -182,10 +186,18 @@ class ServerController:
                                         current_location, parsed.location,
                                         pending_breadcrumb)
                                     logger.info(f"Map edge: {current_location} → {parsed.location}")
+                                # Detect floor type from observation
+                                obs_lower = (parsed.observation or "").lower()
+                                if any(kw in obs_lower for kw in ["carpet", "rug"]):
+                                    floor = "carpet"
+                                elif any(kw in obs_lower for kw in ["tile", "laminate", "wood"]):
+                                    floor = "tile"
+                                else:
+                                    floor = "unknown"
                                 self.map_manager.add_node(
                                     parsed.location,
                                     parsed.location.replace("_", " ").title(),
-                                    floor_type=parsed.observation[:50] if parsed.observation else "unknown")
+                                    floor_type=floor)
                                 current_location = parsed.location
                                 pending_breadcrumb = []
                                 logger.info(f"Location: {current_location}")

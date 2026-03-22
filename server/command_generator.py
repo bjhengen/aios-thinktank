@@ -305,9 +305,9 @@ CALIBRATION:
         if assess_match:
             assessment = assess_match.group(1).strip()
 
-        # Extract location
+        # Extract location (take first word, ignore parenthetical notes)
         location = ""
-        loc_match = re.search(r'LOCATION:\s*(\S+)', response, re.IGNORECASE)
+        loc_match = re.search(r'LOCATION:\s*(\w+)', response, re.IGNORECASE)
         if loc_match:
             location = loc_match.group(1).strip().lower()
 
