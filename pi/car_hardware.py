@@ -15,6 +15,7 @@ import sys
 import time
 import signal
 import argparse
+import threading
 
 from pi.camera_streamer import CameraStreamer
 from pi.motor_controller import MotorController
@@ -35,6 +36,9 @@ class CarHardware:
     Orchestrates camera, motors, sensors, and network communication.
     """
 
+    # How often the sensor watchdog checks (seconds)
+    SENSOR_CHECK_INTERVAL = 0.05  # 50ms = 20Hz
+
     def __init__(self, simulate: bool = False):
         self.simulate = simulate
         self.camera = CameraStreamer(simulate=simulate)
@@ -42,6 +46,8 @@ class CarHardware:
         self.sensors = UltrasonicSensors(simulate=simulate)
         self.network = NetworkClient()
         self.running = False
+        self._last_command = None
+        self._sensor_lock = threading.Lock()
 
         logger.info(f"CarHardware initialized (simulate={simulate})")
 
@@ -155,6 +161,21 @@ class CarHardware:
 
         return False
 
+    def _sensor_watchdog(self) -> None:
+        """Background thread: continuously check sensors and emergency-stop if too close."""
+        logger.info("Sensor watchdog started (20Hz)")
+        while self.running:
+            try:
+                with self._sensor_lock:
+                    sensor_data = self._read_sensors()
+                if self._last_command and self._check_emergency_stop(sensor_data, self._last_command):
+                    logger.warning("WATCHDOG: Emergency stop triggered")
+                    self._last_command = None  # Clear so we don't keep blocking
+            except Exception as e:
+                logger.error(f"Sensor watchdog error: {e}")
+            time.sleep(self.SENSOR_CHECK_INTERVAL)
+        logger.info("Sensor watchdog stopped")
+
     def run(self) -> None:
         """
         Main control loop.
@@ -169,6 +190,10 @@ class CarHardware:
         """
         logger.info("Starting main control loop")
         self.running = True
+
+        # Start sensor watchdog thread
+        watchdog = threading.Thread(target=self._sensor_watchdog, daemon=True)
+        watchdog.start()
 
         logger.info("Connecting to server...")
         self.network.reconnect_loop()
@@ -206,6 +231,9 @@ class CarHardware:
                     # Check sensor-based emergency stop before executing
                     if not self._check_emergency_stop(sensor_data, command):
                         self.motors.execute_command(command)
+                        self._last_command = command  # Watchdog uses this
+                    else:
+                        self._last_command = None
 
                 # Check motor watchdog
                 self.motors.check_watchdog()

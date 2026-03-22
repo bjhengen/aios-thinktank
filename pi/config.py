@@ -61,10 +61,11 @@ class PiConfig:
     ultrasonic_max_distance: float = 400.0  # cm - max rated range
 
     # Motor compensation (all motors working)
+    # Front wheels boosted 10% to compensate for front-heavy weight
     rl_motor_dead: bool = False  # Set True if RL motor fails again
-    comp_fl: float = 1.0    # FL at full commanded speed
+    comp_fl: float = 1.10   # FL boosted for front-heavy chassis
     comp_rl: float = 1.0    # RL at full commanded speed
-    comp_fr: float = 0.94   # FR reduced to correct rightward pull
+    comp_fr: float = 1.04   # FR boosted but still reduced vs FL for rightward pull
     comp_rr: float = 0.94   # RR reduced to correct rightward pull
 
     # Safety settings
