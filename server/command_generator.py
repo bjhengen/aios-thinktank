@@ -75,6 +75,9 @@ class CommandGenerator:
     MAX_ROTATION_SPEED = 220   # Cap rotation speed (needs torque for front-heavy chassis)
     MAX_FORWARD_SPEED = 235    # Cap forward speed (carpet max)
     MAX_DURATION_MS = 2000     # Cap duration so car re-evaluates frequently
+    TILE_SPEED = 190
+    CARPET_SPEED = 235
+    CARPET_KEYWORDS = ["carpet", "rug", "shag", "plush"]
 
     def _is_rotation(self, command: MotorCommand) -> bool:
         """Check if a command is a rotation (opposite directions)."""
@@ -82,15 +85,30 @@ class CommandGenerator:
                 command.left_dir != Direction.STOP and
                 command.right_dir != Direction.STOP)
 
+    def _is_on_carpet(self) -> bool:
+        """Check if the last observation mentions carpet."""
+        obs = self.state.last_observation.lower()
+        return any(kw in obs for kw in self.CARPET_KEYWORDS)
+
     def _sanitize_command(self, command: MotorCommand) -> MotorCommand:
         """Enforce speed and duration limits on AI-generated commands."""
-        speed_cap = self.MAX_ROTATION_SPEED if self._is_rotation(command) else self.MAX_FORWARD_SPEED
+        is_rotation = self._is_rotation(command)
+        speed_cap = self.MAX_ROTATION_SPEED if is_rotation else self.MAX_FORWARD_SPEED
         left_speed = min(command.left_speed, speed_cap)
         right_speed = min(command.right_speed, speed_cap)
         duration_ms = min(command.duration_ms, self.MAX_DURATION_MS) if command.duration_ms > 0 else 0
 
+        # Boost speed on carpet (AI often forgets)
+        if not is_rotation and self._is_on_carpet():
+            min_speed = self.CARPET_SPEED
+            if left_speed > 0 and left_speed < min_speed:
+                left_speed = min_speed
+            if right_speed > 0 and right_speed < min_speed:
+                right_speed = min_speed
+            logger.debug(f"Carpet boost applied: {left_speed},{right_speed}")
+
         if left_speed != command.left_speed or right_speed != command.right_speed:
-            logger.debug(f"Speed capped: {command.left_speed},{command.right_speed} → {left_speed},{right_speed}")
+            logger.debug(f"Speed adjusted: {command.left_speed},{command.right_speed} → {left_speed},{right_speed}")
 
         return MotorCommand(
             left_speed=left_speed,
@@ -224,19 +242,19 @@ REASONING: Moving forward on hard floor to approach the doorway for a better vie
 
 COMMAND REFERENCE:
 - Forward (tile): 190,190,1,1,<duration>
-- Forward (carpet): 250,250,1,1,<duration>
+- Forward (carpet): 235,235,1,1,<duration>
 - Backward: 190,190,0,0,<duration>
-- Rotate left 90°: 230,230,0,1,1250
-- Rotate right 90°: 230,230,1,0,2100
+- Rotate left 90°: 220,220,0,1,1050
+- Rotate right 90°: 220,220,1,0,1800
 - Stop to look: 0,0,2,2,0
 - Curve left: 150,200,1,1,<duration>
 - Curve right: 200,150,1,1,<duration>
 
 CALIBRATION:
-- Turns need HIGH power (~230) to reliably rotate
-- LEFT turns are 2x more efficient than right (1250ms vs 2100ms for 90°)
-- Use 1000-3000ms duration for most moves
-- Carpet needs more power (250) than tile (190)
+- Turns need power ~220 to reliably rotate
+- LEFT turns are faster than right (1050ms vs 1800ms for 90°)
+- Use 1000-2000ms duration for most moves
+- Carpet needs more power (235) than tile (190)
 """
 
         # Add sensor data if available
