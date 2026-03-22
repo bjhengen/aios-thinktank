@@ -112,19 +112,12 @@ class MotorController:
 
     def _compensate_command(self, command: MotorCommand) -> CompensatedCommand:
         """
-        Apply dead-RL motor compensation to produce per-motor speeds.
+        Apply per-motor speed compensation.
 
-        When rl_motor_dead is False, all motors get their side's speed directly.
+        Always applies compensation factors to handle weight distribution
+        and motor differences. When rl_motor_dead is True, comp_rl=0.0
+        disables that motor entirely.
         """
-        if not config.rl_motor_dead:
-            return CompensatedCommand(
-                fl_speed=command.left_speed, fl_dir=command.left_dir,
-                fr_speed=command.right_speed, fr_dir=command.right_dir,
-                rl_speed=command.left_speed, rl_dir=command.left_dir,
-                rr_speed=command.right_speed, rr_dir=command.right_dir,
-                duration_ms=command.duration_ms,
-            )
-
         fl = min(255, int(command.left_speed * config.comp_fl))
         rl = min(255, int(command.left_speed * config.comp_rl))
         fr = min(255, int(command.right_speed * config.comp_fr))

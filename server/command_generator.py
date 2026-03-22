@@ -72,7 +72,7 @@ class CommandGenerator:
         logger.info("CommandGenerator initialized")
 
     # Safety limits enforced in code (not prompt-dependent)
-    MAX_ROTATION_SPEED = 160   # Cap rotation speed to prevent wall collisions
+    MAX_ROTATION_SPEED = 220   # Cap rotation speed (needs torque for front-heavy chassis)
     MAX_FORWARD_SPEED = 235    # Cap forward speed (carpet max)
     MAX_DURATION_MS = 2000     # Cap duration so car re-evaluates frequently
 
@@ -113,8 +113,8 @@ class CommandGenerator:
     def _get_turn_command(self) -> MotorCommand:
         """Get a command to turn after backing up (prefer left turns - more efficient)."""
         logger.warning("Turning to find new path")
-        # Turn left ~90 degrees (1250ms at speed 230)
-        return MotorCommand.rotate_left(230, 1250)
+        # Turn left ~90 degrees at capped rotation speed
+        return MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1250)
 
     def check_and_override_if_blind(self, parsed: ParsedResponse) -> ParsedResponse:
         """
