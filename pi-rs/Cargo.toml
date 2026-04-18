@@ -1,0 +1,36 @@
+[package]
+name = "robotcar-pi"
+version = "0.1.0"
+edition = "2021"
+description = "AIOS robot car — Pi-side driver. Rust rewrite of pi/*.py."
+authors = ["Brian Hengen <brian@friendly-robots.com>"]
+license = "MIT"
+
+[dependencies]
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging — format will mirror the Python logger for migration parity
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Hardware access — phase 3+
+rppal = "0.19"
+
+# Phase 4+: the rest
+# turbojpeg = "1"
+# libcamera = "0.3"
+# crossbeam-channel = "0.5"
+# byteorder = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[[bin]]
+name = "robotcar-pi"
+path = "src/main.rs"

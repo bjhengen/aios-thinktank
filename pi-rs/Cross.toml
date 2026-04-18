@@ -1,0 +1,3 @@
+# cross-rs configuration. Pinned toolchain images for reproducibility.
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5"
