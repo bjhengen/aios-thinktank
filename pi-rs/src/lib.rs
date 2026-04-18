@@ -3,6 +3,7 @@
 pub mod config;
 pub mod motors;
 pub mod protocol;
+pub mod sensors;
 
 use std::io::Write;
 

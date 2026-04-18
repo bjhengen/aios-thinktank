@@ -37,6 +37,60 @@ pub const RR_PWM: u8 = 19;
 pub const PWM_FREQUENCY_HZ: f64 = 100.0;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Ultrasonic sensors (HC-SR04, echo through TXS0108E 5V→3.3V level shifter)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// FC is physically disconnected per the wiring session — we keep the pin
+// assignment for compatibility but expect it to time out on every read.
+pub const US_FC_TRIG: u8 = 4;
+pub const US_FC_ECHO: u8 = 24;
+pub const US_FL_TRIG: u8 = 7;
+pub const US_FL_ECHO: u8 = 25;
+pub const US_FR_TRIG: u8 = 8;
+pub const US_FR_ECHO: u8 = 20;
+pub const US_RL_TRIG: u8 = 9;
+pub const US_RL_ECHO: u8 = 14;
+pub const US_RR_TRIG: u8 = 10;
+pub const US_RR_ECHO: u8 = 15;
+
+/// Maximum time we'll wait for an echo edge before declaring the sensor
+/// out-of-range or dead. HC-SR04 max rated range is ~4m → 23ms round-trip;
+/// 40ms gives some headroom.
+pub const US_TIMEOUT_US: u64 = 40_000;
+
+/// Inter-measurement delay between consecutive sensor reads. HC-SR04
+/// datasheet recommends ≥60ms for pristine readings, but Python gets by
+/// with 10ms in practice (brief acoustic overlap isn't catastrophic).
+pub const US_INTER_READ_MS: u64 = 10;
+
+/// Valid physical range for HC-SR04 readings. Anything below 2cm is sensor
+/// minimum, anything above 400cm is beyond rated range.
+pub const US_MIN_CM: f32 = 2.0;
+pub const US_MAX_CM: f32 = 400.0;
+
+/// Speed of sound at ~20°C, cm/μs. Actual speed varies ~1% per 10°C —
+/// not worth temperature-compensating for navigation-grade readings.
+pub const US_SPEED_OF_SOUND_CM_PER_US: f32 = 0.0343;
+
+/// Comma-separated list of sensor names to skip entirely.
+/// Defaults to "fc,rl" — FC is physically disconnected, RL is wiring-broken
+/// pending the chassis rebuild. Dead sensors eat 40ms of timeout per cycle,
+/// so skipping them brings the read loop from ~7Hz back to ~20Hz.
+///
+/// Set `ROBOTCAR_DEAD_SENSORS=` (empty) to probe all 5 channels after the
+/// rebuild, or override with a specific list.
+pub fn dead_sensors() -> Vec<String> {
+    std::env::var("ROBOTCAR_DEAD_SENSORS")
+        .unwrap_or_else(|_| "fc,rl".into())
+        .split(',')
+        .filter_map(|s| {
+            let t = s.trim().to_lowercase();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Runtime-tunable: motor compensation + watchdog
 // ═══════════════════════════════════════════════════════════════════════════
 
