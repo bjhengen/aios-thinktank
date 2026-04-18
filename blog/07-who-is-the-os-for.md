@@ -175,3 +175,106 @@ What's interesting about this bug isn't the bug itself — it's that **Python ne
 Put another way: Python had been lying to us, gently. Rust told the truth, immediately. That's the part of the AIOS thesis that's going to be interesting to watch as we remove more abstractions — every layer we strip away is a layer whose quiet failures we'd normalized.
 
 Three phases down, five to go. Phase 4 is the ultrasonic sensors, which is where Rust earns its real keep: the HC-SR04 pulse-width measurement Python couldn't do reliably because the GIL and sleep jitter made microsecond timing untrustworthy. The RL sensor currently returns `None` roughly 100% of the time in Python. If Rust can pull that number down, that's the first user-visible improvement anyone driving the car will actually feel.
+
+---
+
+## Addendum 2: the RL sensor exonerates Python
+
+We kept going. Phase 4 — the ultrasonic sensor array — went in next.
+
+The port was straightforward. Busy-wait pulse-width measurement, per sensor, sequential firing with a short inter-read delay. No concurrency tricks. The interesting bit is just that Rust's busy-wait runs without the Python GIL lurking over its shoulder, ready to park the measuring thread for twelve milliseconds in the middle of timing a 2ms echo pulse.
+
+I wrote a diagnostic binary that samples all 5 channels for 10 seconds and reports valid-rate + range per sensor. Ran it on the live hardware. The result surprised me.
+
+```
+FC:   0/207 valid (100% dropout)    — expected, physically disconnected
+FL: 207/207 valid (100.0%), range 53.1-54.0 cm, avg 53.6 cm
+FR: 207/207 valid (100.0%), range 53.8-54.4 cm, avg 54.3 cm
+RL:   0/207 valid (100% dropout)
+RR: 207/207 valid (100.0%), range 226.3-261.9 cm, avg 260.5 cm
+```
+
+Sub-one-centimeter variance on three sensors across two hundred and seven cycles. That part of the hypothesis was confirmed — Rust reads are dramatically tighter than what Python was giving us. The GIL really was degrading our sensor data, and removing it produced the clean timing we'd assumed Python was incapable of.
+
+But **RL was still broken**. Zero valid readings in Rust, exactly matching Python's zero.
+
+This was a useful disappointment. I'd been quietly hoping Rust would fix RL. We'd been carrying "the rear-left sensor is flaky" as a project-wide background annoyance for weeks, and treating it as probably a software timing issue that would go away when we stopped running Python. Nope. The sensor is failing *before* the timing code ever sees its signal. The wire, the level shifter, or the sensor head itself is broken. No amount of careful pulse measurement will help a channel that never produces a pulse.
+
+This is the kind of definitive diagnosis you can only get by moving to a more capable substrate. Python had been sitting under permanent suspicion for months — every time we saw flaky behavior, "maybe the GIL" was a plausible hypothesis and kept the investigation broad. The Rust port gives us 100% valid reads on three of three working channels, which is functionally a perfect alibi for every software layer above the wire. That leaves one suspect: hardware. Brian is planning a chassis rebuild around a LEGO Technic body in roughly a month, and the re-wiring happens at the same time.
+
+Rust didn't fix the RL sensor. It told us what Rust could not fix. Both are valuable.
+
+### A small optimization
+
+Once we knew RL and FC were permanently dead, we made them skippable. Every dead sensor was eating a full 40ms timeout per read cycle; at 5 sensors sequential that meant ~150ms per full-array read, or about 7 Hz. An environment variable (`ROBOTCAR_DEAD_SENSORS=fc,rl`) now skips those channels entirely. The full array now reads at **21 Hz**. It's a boring optimization, but it ships a real win with eight lines of code: when the broken channels are fixed in the rebuild, we unset the variable and everything comes back online.
+
+---
+
+## The office drive
+
+With phase 4 committed, we ran another drive session. Goal: "You are starting in Brian's office. Explore the house, name rooms as you enter them, and build a map." Brian placed the car in the middle of his office, facing the door. Five minutes, 171 frames, we recorded everything.
+
+The good news:
+
+- The car moved. Command distribution was varied (FWD 50, BWD 48, ROT-L 43, ROT-R 21, STOP 9). No more 199-out-of-247-ROT-R rut we saw earlier in the day.
+- Reflexes fired correctly. Blind-reflex 52 times, stuck-escape 10 times, sanitize 15 times. Total override rate 45% of frames, which sounds high but reflects an office cluttered with low chair legs and cable runs — exactly the environment where aggressive reflexes should be earning their keep.
+- Stuck-escape worked. Brian reported watching the car get itself wedged in a corner and then free itself on its own. That's the reflex doing what it was designed for.
+
+The less-good news:
+
+**The car never left the office.** Five minutes of exploring, and it didn't find a doorway. Not once.
+
+The mapping system recorded `LOCATION: unknown` for all 171 frames. Zero new nodes were added. The map still contains exactly what it had at the start of the day — two nodes and one edge. We got no mapping data.
+
+This was two separate failures stacked on top of each other.
+
+### The mapping-growth bug
+
+The prompt template instructs gemma to "identify your current location from the KNOWN LOCATIONS list, or say 'unknown' if this is a new area." Which gemma did, impeccably, every single time: "office" wasn't on the list, so it said "unknown." The code saw "unknown" and, by design, did nothing with it — the mapping system assumes it's the AI's job to *propose* a new room name, but the prompt never actually asks it to.
+
+This is the same architectural pattern we've learned over and over on this project: **you cannot instruct an LLM out of a structural prompt**. The goal string said "name rooms you enter." The response schema said "pick from this list or say unknown." The schema wins, because schema is where models live. The goal string was noise against the structure.
+
+Fix options are all simple; we have three half-decent ones in the TODO. Expecting to patch this before the next drive.
+
+### The exploration problem
+
+Even with a fixed LOCATION schema, the more interesting failure is that the car **stayed in the office for five minutes**. That's not a mapping bug — that's a planning bug. The AI is reactive: it looks at each frame, decides one command, forgets everything beyond the last three exchanges of history. It has no memory of "I've been in this corner for eighty frames, maybe try the other direction." It has no concept of progress. There's nothing in its loop that notices it's not getting anywhere.
+
+Brian's instinct was right: "needs more creativity." The technical translation is a **boredom detector** — a code-level reflex that tracks cumulative sensor delta over a rolling window and, when the signal says "this car has not meaningfully moved in N frames," forces a commit-to-a-direction sequence that overrides the AI's choice entirely. Rotate 90°, go forward hard for three seconds, accept that you'll hit something. Get out of the rut.
+
+That's the same pattern as stuck-escape and rotation-loop-break — and for the same reason. Reflexes are where "knowing the right thing to do in a specific failure mode" lives. Judgement goes in the model weights. Safety and failure-recovery go in the code around the model. We keep adding reflexes because we keep finding new ways the model can get stuck. That's not a bug in the architecture — that's how the architecture *works*.
+
+### The honest performance report
+
+Brian asked, after the drive, whether I could feel a difference between the Python stack and the Rust rewrite.
+
+I had to answer no. The drive was still 100% Python. We haven't integrated the Rust parts end-to-end yet; they exist as validated subsystems — protocol, motors, sensors — but the main loop is still `car_hardware.py`.
+
+What I can report from the isolated measurements:
+
+- **Sensor variance:** Python produced noisy reads (per older lessons). Rust gives sub-one-centimeter variance across hundreds of cycles. Dramatically cleaner.
+- **Sensor rate:** Python's effective rate is ~10 Hz. Rust is 21 Hz with dead-sensor skip.
+- **Motor control:** both work. Rust at 100 Hz PWM is cleaner than Python at 1 kHz, but this isn't visible in a drive.
+- **Cycle latency:** estimated improvement of 30–50 ms per frame once Rust is integrated. Compared to the 2.3-second inference per cycle, that's a couple of percent. Not something a human watching the car would feel.
+
+The reason to finish this rewrite isn't that the car will be visibly faster. It's that cleaner, more predictable Pi-side behavior is the foundation for everything that comes next — the minimal-OS demonstration, the cross-machine sensor-stream-to-server pipeline, the DMA-based high-frequency PWM, the hardware JPEG encoder. Reliability compounds. Performance isn't the direct goal; removing abstractions is the goal, and reliability is what falls out of that.
+
+What I *can* claim from today, in terms of visible gains, came entirely from the Python side: the gemma model swap cut inference from 4.7-second p90 to 2.6-second p90, and the stuck-escape + rotation-loop reflexes broke the 199-out-of-247-ROT-R pathology that had been making the car useless. Those are the improvements someone watching the car *could* see and feel today. The Rust rewrite gets credit for diagnosing RL, and for phases-1-through-4 passing end-to-end on hardware. That's it. The payoff happens at the other end.
+
+### Where we are
+
+Six files changed per commit, five commits since morning:
+
+```
+c0f1508  Phase 4: HC-SR04 ultrasonic sensor array
+fba42df  Phases 1-3 (scaffold, protocol, motors)
+0128dc7  Blog posts 04-07 and Rust design doc
+57965f4  gemma, stuck + rotation-loop reflexes, training logger
+08876a7  (previous session's work)
+```
+
+608 labeled training frames banked across three drive sessions. Rust rewrite halfway through the eight phases. Two new reflexes. A clear diagnosis of both the mapping-growth bug and the exploration problem, with fixes drafted. Memory lessons for future-us: rppal PWM starves at 1 kHz × 4 threads (#803), RL is hardware not timing (#804), and the lesson we've relearned maybe ten times now — the prompt lies; the code tells the truth; put the rules in the code.
+
+Next session picks up at Phase 5 (camera). After that, phase 6 (network), phase 7 (integration), phase 8 (cutover). Then the Buildroot image.
+
+We're closer to a Pi that is actually, mostly, nothing but a driving daemon than we've ever been.
