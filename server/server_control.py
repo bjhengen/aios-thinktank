@@ -20,6 +20,7 @@ from server.vision_model import VisionModel
 from server.network_server import NetworkServer
 from server.command_generator import CommandGenerator, SimpleCommandParser
 from server.map_manager import MapManager
+from server.training_logger import TrainingLogger
 from server.config import config
 from shared.protocol import MotorCommand, Direction
 from shared.utils import setup_logging
@@ -49,6 +50,8 @@ class ServerController:
         self.map_manager = None
         if not manual_mode and config.enable_mapping:
             self.map_manager = MapManager(config.map_file)
+
+        self.training_logger = None if manual_mode else TrainingLogger()
 
         logger.info(f"ServerController initialized (manual_mode={manual_mode})")
 
@@ -80,6 +83,9 @@ class ServerController:
         if self.map_manager:
             self.map_manager.save()
             logger.info("Map saved")
+
+        if self.training_logger:
+            self.training_logger.close()
 
         # Stop network server
         self.network_server.stop()
@@ -157,12 +163,48 @@ class ServerController:
                         parsed.command = self.command_generator.get_safe_fallback_command()
                         parsed.reasoning = "Parse failed - emergency stop"
 
+                    # Snapshot the raw model command for training-data provenance
+                    command_before_overrides = parsed.command
+                    overrides_applied = []
+
                     # Check for blind/collision reflex override
                     parsed = self.command_generator.check_and_override_if_blind(parsed)
+                    if parsed.command is not command_before_overrides:
+                        overrides_applied.append("blind_reflex")
+
+                    # Stuck-streak escape: force rotate when model fixates on BWD/STOP
+                    before_stuck = parsed.command
+                    parsed = self.command_generator.check_and_override_if_stuck(parsed, sensor_data)
+                    if parsed.command is not before_stuck:
+                        overrides_applied.append("stuck_escape")
 
                     # Enforce speed/duration limits (catches reflex overrides too)
                     if parsed.command:
+                        before_sanitize = parsed.command
                         parsed.command = self.command_generator._sanitize_command(parsed.command)
+                        if parsed.command != before_sanitize:
+                            overrides_applied.append("sanitize")
+
+                    # Persist training record (fire-and-forget, never blocks control loop)
+                    if self.training_logger:
+                        try:
+                            self.training_logger.log_frame(
+                                frame_bytes=frame_data,
+                                sensor_data=sensor_data,
+                                prompt=prompt,
+                                raw_response=response,
+                                parsed_command_before_overrides=command_before_overrides,
+                                final_command=parsed.command,
+                                observation=parsed.observation,
+                                assessment=parsed.assessment,
+                                reasoning=parsed.reasoning,
+                                location=parsed.location,
+                                overrides_applied=overrides_applied,
+                                goal=goal,
+                                steps_taken=self.command_generator.state.steps_taken,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Training log failed (non-fatal): {e}")
 
                     # Log the structured response
                     if parsed.observation:

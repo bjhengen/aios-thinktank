@@ -17,7 +17,7 @@ class ServerConfig:
 
     # llama-swap settings
     llama_swap_url: str = "http://localhost:8200"
-    model_name: str = "qwen3.5-35b"
+    model_name: str = "gemma-4-26b-a4b"
     temperature: float = 0.7
     max_new_tokens: int = 200  # Enough for proper command format
     inference_timeout: float = 30.0  # llama-swap needs time for cold load

@@ -37,9 +37,13 @@ debug_frames/
 *.jpeg
 *.png
 
-# IDE
+# Training data — large, collected per-session
+training_data/
+
+# IDE / tooling local state
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~

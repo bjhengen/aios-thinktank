@@ -31,6 +31,10 @@ class ControlState:
     blind_frames: int = 0  # Consecutive frames with poor visibility
     just_backed_up: bool = False  # True if last command was a reflex backup
     backup_count: int = 0  # How many times we've backed up in this stuck situation
+    stuck_streak: int = 0  # Consecutive BWD/STOP commands while front sensors still blocked
+    last_escape_rotate_dir: Optional[str] = None  # 'left'|'right' — alternate to break loops
+    rotate_streak: int = 0  # Consecutive same-direction rotations while front still blocked
+    last_rotate_dir: Optional[str] = None  # 'left'|'right' — track what the AI last rotated
 
 
 # Keywords indicating the camera can't see properly
@@ -65,6 +69,13 @@ class CommandGenerator:
     BACKUP_DURATION_MS = 1500
     # Backup speed
     BACKUP_SPEED = 150
+    # Stuck-escape thresholds: front sensor clearance that counts as "still blocked",
+    # and number of consecutive no-progress cycles before forcing a rotate.
+    STUCK_FRONT_CM = 30
+    STUCK_TRIGGER = 2
+    # Rotation-loop detection: after this many same-direction rotates while front
+    # stays blocked, force the opposite rotation to break the circle.
+    ROTATE_LOOP_TRIGGER = 2
 
     def __init__(self):
         """Initialize command generator."""
@@ -165,6 +176,116 @@ class CommandGenerator:
             self.state.blind_frames = 0
             self.state.just_backed_up = False
             self.state.backup_count = 0
+
+        return parsed
+
+    def _front_blocked(self, sensor_data: SensorData) -> bool:
+        """True if either front sensor reads below STUCK_FRONT_CM."""
+        if sensor_data is None:
+            return False
+        d = sensor_data.to_dict()
+        return any(v is not None and v < self.STUCK_FRONT_CM
+                   for v in (d.get('fl'), d.get('fr')))
+
+    def _pick_escape_dir(self, sensor_data: SensorData) -> str:
+        """Rotate away from the closer rear sensor so the rear doesn't swing into furniture."""
+        d = sensor_data.to_dict() if sensor_data else {}
+        rl = d.get('rl') or 999
+        rr = d.get('rr') or 999
+        return 'right' if rl < rr else 'left'
+
+    def _rotation_dir(self, cmd: MotorCommand) -> Optional[str]:
+        """Return 'left'|'right' if cmd is a rotation, else None."""
+        if cmd.left_dir == Direction.BACKWARD and cmd.right_dir == Direction.FORWARD:
+            return 'left'
+        if cmd.left_dir == Direction.FORWARD and cmd.right_dir == Direction.BACKWARD:
+            return 'right'
+        return None
+
+    def check_and_override_if_stuck(self, parsed: ParsedResponse,
+                                     sensor_data: SensorData) -> ParsedResponse:
+        """
+        Two-part escape reflex, both gated on front sensors still being blocked:
+
+        1. **BWD/STOP fixation** — model keeps backing up or stopping while wedged.
+           Force a rotate (alternating direction each trigger).
+        2. **Rotation-loop** — model keeps rotating the same way without breaking free.
+           Force the opposite rotation.
+
+        Complements check_and_override_if_blind (which handles camera-can't-see cases).
+        """
+        if parsed.command is None or sensor_data is None:
+            return parsed
+
+        cmd = parsed.command
+        is_bwd = (cmd.left_dir == Direction.BACKWARD
+                  and cmd.right_dir == Direction.BACKWARD)
+        is_stop = (cmd.left_dir == Direction.STOP
+                   and cmd.right_dir == Direction.STOP)
+        rot_dir = self._rotation_dir(cmd)
+        front_blocked = self._front_blocked(sensor_data)
+        d = sensor_data.to_dict()
+
+        # Part 1: BWD/STOP fixation
+        if (is_bwd or is_stop) and front_blocked:
+            self.state.stuck_streak += 1
+        else:
+            self.state.stuck_streak = 0
+
+        if self.state.stuck_streak >= self.STUCK_TRIGGER:
+            prev = self.state.last_escape_rotate_dir
+            if prev == 'right':
+                direction = 'left'
+            elif prev == 'left':
+                direction = 'right'
+            else:
+                direction = self._pick_escape_dir(sensor_data)
+            if direction == 'left':
+                parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
+            else:
+                parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
+            parsed.reasoning = (f"REFLEX: stuck_streak={self.state.stuck_streak}, "
+                                f"forcing rotate-{direction}")
+            logger.warning(
+                f"STUCK ESCAPE: rotate {direction} "
+                f"(front FL={d.get('fl')}cm FR={d.get('fr')}cm, "
+                f"rear RL={d.get('rl')}cm RR={d.get('rr')}cm)"
+            )
+            self.state.last_escape_rotate_dir = direction
+            self.state.stuck_streak = 0
+            self.state.rotate_streak = 0  # forced rotate also resets rotation streak
+            self.state.last_rotate_dir = direction
+            return parsed
+
+        # Part 2: rotation-loop (same rotation repeated while still blocked)
+        if rot_dir is not None and front_blocked:
+            if rot_dir == self.state.last_rotate_dir:
+                self.state.rotate_streak += 1
+            else:
+                self.state.rotate_streak = 0
+            self.state.last_rotate_dir = rot_dir
+        elif rot_dir is None:
+            # Non-rotation command — reset rotation tracking
+            self.state.rotate_streak = 0
+            self.state.last_rotate_dir = None
+
+        if self.state.rotate_streak >= self.ROTATE_LOOP_TRIGGER:
+            # Break the circle by rotating the other way
+            opposite = 'left' if rot_dir == 'right' else 'right'
+            if opposite == 'left':
+                parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
+            else:
+                parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
+            parsed.reasoning = (f"REFLEX: rotate_streak={self.state.rotate_streak} "
+                                f"same-direction, reversing to rotate-{opposite}")
+            logger.warning(
+                f"ROTATION-LOOP BREAK: {rot_dir}→{opposite} "
+                f"(front FL={d.get('fl')}cm FR={d.get('fr')}cm, "
+                f"rear RL={d.get('rl')}cm RR={d.get('rr')}cm)"
+            )
+            self.state.rotate_streak = 0
+            self.state.last_rotate_dir = opposite
+            self.state.last_escape_rotate_dir = opposite
 
         return parsed
 
