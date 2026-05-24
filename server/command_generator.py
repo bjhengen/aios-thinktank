@@ -328,6 +328,102 @@ class CommandGenerator:
 
         return parsed
 
+    def _least_blocked_rear_dir(self, sensor_data: SensorData) -> str:
+        """Pick rotation direction so the rear swings toward the more open side.
+
+        Identical heuristic to _pick_escape_dir but stays robust if that
+        method is later removed.
+        """
+        d = sensor_data.to_dict() if sensor_data else {}
+        rl = d.get('rl') or 999
+        rr = d.get('rr') or 999
+        return 'right' if rl < rr else 'left'
+
+    def _front_avg(self, sensor_data: SensorData) -> float:
+        """Average of FL and FR, treating None as 999 (sensor 'sees nothing')."""
+        if sensor_data is None:
+            return 999.0
+        d = sensor_data.to_dict()
+        fl = d.get('fl') if d.get('fl') is not None else 999
+        fr = d.get('fr') if d.get('fr') is not None else 999
+        return (fl + fr) / 2.0
+
+    def check_and_override_if_bored(self, parsed: ParsedResponse,
+                                     sensor_data: SensorData,
+                                     override_applied_this_frame: bool) -> ParsedResponse:
+        """Detect rut-running over a rolling window; force a 2-frame commit.
+
+        Composite signal:
+          - override_rate >= OVERRIDE_RATE_THRESHOLD (reflexes thrashing), OR
+          - sensor_delta_sum < SENSOR_DELTA_THRESHOLD (car not moving).
+
+        When in mid-commit (commit_state != None), advance the state machine
+        and return the forced command for the current phase.
+        """
+        bs = self.boredom_state
+
+        # Capture pre-append length: we only evaluate when a new frame is
+        # added to an *already-full* window (sliding window semantics).
+        window_was_full = (len(bs.recent_overrides) >= self.BOREDOM_WINDOW)
+
+        # Update rolling buffers with the PREVIOUS frame's outcome.
+        bs.recent_overrides.append(bool(override_applied_this_frame))
+        bs.recent_front_distances.append(self._front_avg(sensor_data))
+
+        # If we're mid-commit, advance the state machine and return forced cmd.
+        if bs.commit_state is not None:
+            return self._execute_commit_step(parsed, sensor_data)
+
+        # Cooldown blocks re-trigger.
+        if bs.cooldown_frames > 0:
+            bs.cooldown_frames -= 1
+            return parsed
+
+        # Need a full window before evaluating signals.
+        if not window_was_full:
+            return parsed
+
+        # Compute signals.
+        override_rate = sum(bs.recent_overrides) / float(self.BOREDOM_WINDOW)
+        d = list(bs.recent_front_distances)
+        sensor_delta_sum = sum(abs(d[i] - d[i - 1]) for i in range(1, len(d)))
+
+        bored = (override_rate >= self.OVERRIDE_RATE_THRESHOLD
+                 or sensor_delta_sum < self.SENSOR_DELTA_THRESHOLD)
+
+        if not bored:
+            return parsed
+
+        # Trigger: start the commit sequence.
+        bs.commit_state = 'rotate'
+        bs.commit_direction = self._least_blocked_rear_dir(sensor_data)
+        bs.recent_overrides.clear()
+        bs.recent_front_distances.clear()
+        logger.warning(
+            f"BOREDOM TRIGGERED: override_rate={override_rate:.2f} "
+            f"sensor_delta={sensor_delta_sum:.0f}cm window={self.BOREDOM_WINDOW} "
+            f"→ commit rotate-{bs.commit_direction}"
+        )
+        return self._execute_commit_step(parsed, sensor_data)
+
+    def _execute_commit_step(self, parsed: ParsedResponse,
+                              sensor_data: SensorData) -> ParsedResponse:
+        """Stub — replaced with state machine in Task 8."""
+        bs = self.boredom_state
+        if bs.commit_state == 'rotate':
+            direction = bs.commit_direction or 'left'
+            if direction == 'left':
+                parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
+            else:
+                parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
+            parsed.reasoning = f"BOREDOM COMMIT 1/2: rotate-{direction}"
+            bs.commit_state = 'forward'
+            return parsed
+        # 'forward' or any other state — full handling in Task 8
+        bs.commit_state = None
+        bs.cooldown_frames = self.BOREDOM_COOLDOWN_FRAMES
+        return parsed
+
     def _format_sensor_section(self, sensor_data: SensorData) -> str:
         """Format sensor data as a prompt section with proximity warnings."""
         distances = sensor_data.to_dict()
