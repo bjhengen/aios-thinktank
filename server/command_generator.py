@@ -386,7 +386,12 @@ CALIBRATION:
         if known_locations:
             locs = ", ".join(known_locations)
             prompt += f"\nKNOWN LOCATIONS: {locs}"
-            prompt += "\nIdentify your current location from this list, or say 'unknown' if this is a new area."
+            prompt += (
+                "\nPick the best match from this list. If you're confident "
+                "you're in a different area, propose a short one-word name "
+                "(e.g. closet, garage). Say 'unknown' only if you genuinely "
+                "cannot tell."
+            )
 
         if self.state.last_command:
             prompt += f"\nPREVIOUS COMMAND: {self._command_to_string(self.state.last_command)}"
