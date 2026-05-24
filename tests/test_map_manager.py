@@ -210,6 +210,67 @@ def test_known_locations_deduplicates_observed_and_seeds():
     assert known.count("office") == 1
 
 
+# ---------------------------------------------------------------------------
+# Task 6: rename_node / delete_node — used by --review-map curation
+# ---------------------------------------------------------------------------
+
+def test_rename_node_updates_node_id():
+    mm = MapManager()
+    mm.add_node("unknown_x1", "Unknown X1", [], "tile")
+    mm.rename_node("unknown_x1", "garage")
+    assert mm.get_node("unknown_x1") is None
+    node = mm.get_node("garage")
+    assert node is not None
+    assert node.id == "garage"
+
+
+def test_rename_node_updates_edges():
+    mm = MapManager()
+    mm.add_node("unknown_x1", "Unknown X1", [], "tile")
+    mm.add_node("hallway", "Hallway", [], "tile")
+    crumbs = [{"left_speed": 190, "right_speed": 190,
+               "left_dir": 1, "right_dir": 1, "duration_ms": 2000}]
+    mm.add_edge("unknown_x1", "hallway", crumbs)
+    mm.add_edge("hallway", "unknown_x1", crumbs)
+
+    mm.rename_node("unknown_x1", "garage")
+
+    # Edges should now reference 'garage', not 'unknown_x1'
+    from_ids = {e.from_id for e in mm.edges}
+    to_ids = {e.to_id for e in mm.edges}
+    assert "unknown_x1" not in from_ids
+    assert "unknown_x1" not in to_ids
+    assert "garage" in from_ids
+    assert "garage" in to_ids
+
+
+def test_rename_node_missing_is_noop():
+    mm = MapManager()
+    mm.rename_node("nonexistent", "garage")  # should not raise
+    assert mm.get_node("garage") is None
+
+
+def test_delete_node_removes_node_and_edges():
+    mm = MapManager()
+    mm.add_node("kitchen", "Kitchen", [], "tile")
+    mm.add_node("hallway", "Hallway", [], "tile")
+    crumbs = [{"left_speed": 190, "right_speed": 190,
+               "left_dir": 1, "right_dir": 1, "duration_ms": 2000}]
+    mm.add_edge("kitchen", "hallway", crumbs)
+    mm.add_edge("hallway", "kitchen", crumbs)
+
+    mm.delete_node("kitchen")
+
+    assert mm.get_node("kitchen") is None
+    assert all(e.from_id != "kitchen" and e.to_id != "kitchen"
+               for e in mm.edges)
+
+
+def test_delete_node_missing_is_noop():
+    mm = MapManager()
+    mm.delete_node("nonexistent")  # should not raise
+
+
 if __name__ == "__main__":
     test_map_node_creation()
     test_map_edge_creation()
@@ -227,4 +288,9 @@ if __name__ == "__main__":
     test_known_locations_includes_seeds_when_no_nodes()
     test_known_locations_observed_first_then_seeds()
     test_known_locations_deduplicates_observed_and_seeds()
+    test_rename_node_updates_node_id()
+    test_rename_node_updates_edges()
+    test_rename_node_missing_is_noop()
+    test_delete_node_removes_node_and_edges()
+    test_delete_node_missing_is_noop()
     print("All map manager tests passed!")

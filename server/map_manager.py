@@ -201,6 +201,35 @@ class MapManager:
             })
         return reversed_crumbs
 
+    def rename_node(self, old_id: str, new_id: str) -> None:
+        """Rename a node and rewrite any edges that reference it.
+
+        No-op if `old_id` is not present.
+        """
+        if old_id not in self.nodes:
+            return
+        node = self.nodes.pop(old_id)
+        node.id = new_id
+        self.nodes[new_id] = node
+        for edge in self.edges:
+            if edge.from_id == old_id:
+                edge.from_id = new_id
+            if edge.to_id == old_id:
+                edge.to_id = new_id
+        logger.info(f"Renamed map node: {old_id} → {new_id}")
+
+    def delete_node(self, node_id: str) -> None:
+        """Delete a node and all edges that reference it.
+
+        No-op if `node_id` is not present.
+        """
+        if node_id not in self.nodes:
+            return
+        del self.nodes[node_id]
+        self.edges = [e for e in self.edges
+                      if e.from_id != node_id and e.to_id != node_id]
+        logger.info(f"Deleted map node: {node_id}")
+
     def get_known_locations(self) -> List[str]:
         """Observed node IDs first, then seed candidates not yet visited."""
         from server import config as server_config
