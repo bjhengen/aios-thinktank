@@ -595,6 +595,12 @@ def main():
         help='Interactive map review: rename, delete, or keep each node'
     )
 
+    parser.add_argument(
+        '--boredom-detector',
+        action='store_true',
+        help='Enable boredom-detector reflex (off by default; use for explore drives)'
+    )
+
     args = parser.parse_args()
 
     # Update config
@@ -607,7 +613,10 @@ def main():
         # Force-enable map_manager even though manual_mode is True
         controller.map_manager = MapManager(config.map_file)
     else:
-        controller = ServerController(manual_mode=args.manual)
+        controller = ServerController(
+            manual_mode=args.manual,
+            boredom_enabled=args.boredom_detector,
+        )
 
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig, frame):
