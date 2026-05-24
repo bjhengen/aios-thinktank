@@ -107,7 +107,7 @@ After parsing, validate any proposed location name before creating a node. In th
 ```python
 # Reject malformed location names — fall back to 'unknown'
 if parsed.location and parsed.location != "unknown":
-    if not re.match(r'^[a-z][a-z0-9_]{1,15}$', parsed.location):
+    if not re.match(r'^[a-z][a-z0-9_]{0,15}$', parsed.location):
         logger.warning(f"Invalid location name '{parsed.location}' — treating as unknown")
         parsed.location = "unknown"
 ```
@@ -134,7 +134,7 @@ def run_review_map(self) -> None:
         choice = input("(k)eep / (r)ename / (d)elete: ").strip().lower()
         if choice == 'r':
             new_id = input("New name: ").strip().lower()
-            if re.match(r'^[a-z][a-z0-9_]{1,15}$', new_id):
+            if re.match(r'^[a-z][a-z0-9_]{0,15}$', new_id):
                 self._rename_node(node_id, new_id)
         elif choice == 'd':
             self._delete_node(node_id)

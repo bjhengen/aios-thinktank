@@ -527,6 +527,11 @@ Insert this method just before `def main()` at the bottom of `server/server_cont
 
         No network, no AI, no Pi connection. Operates purely on the
         local map_data.json file.
+
+        Note: only nodes that exist in map_data.json appear here. Seed
+        names from config.SEED_LOCATIONS that the car never identified
+        won't show up (they only enter the map when the AI promotes
+        them via a LOCATION: response).
         """
         if not self.map_manager:
             logger.error("Mapping not enabled")
@@ -692,6 +697,9 @@ class BoredomState:
     commit_state: Optional[str] = None       # None | 'rotate' | 'forward'
     commit_direction: Optional[str] = None   # 'left' | 'right'
     cooldown_frames: int = 0
+    last_executed_commit_phase: Optional[str] = None  # 'rotate' | 'forward' | None
+                                                       # set by _execute_commit_step
+                                                       # so the caller can tag training data
 ```
 
 - [ ] **Step 2: Add boredom constants to `CommandGenerator` class**
@@ -780,7 +788,15 @@ from shared.protocol import MotorCommand, Direction, SensorData
 
 
 def _ai_forward_response() -> ParsedResponse:
-    """A generic 'AI said forward' response, no overrides applied."""
+    """A generic 'AI said forward' response, no overrides applied.
+
+    Note on the `override_applied_this_frame` parameter in these tests:
+    per spec §2d, server_control passes the PREVIOUS frame's override
+    outcome (via `self.last_frame_had_override`). In these unit tests we
+    call the detector directly, so the parameter we pass simulates what
+    the previous frame did. The asymmetry is intentional — the detector
+    always works on a one-frame delay relative to the override chain.
+    """
     return ParsedResponse(
         command=MotorCommand.forward(190, 1500),
         observation="Clear path ahead",
@@ -1100,7 +1116,8 @@ def test_cooldown_blocks_retrigger():
     cg.check_and_override_if_bored(_ai_forward_response(),
                                     _sensors(fl=100, fr=100),
                                     override_applied_this_frame=False)
-    # During cooldown, fill the buffer again with a triggering signal
+    # During cooldown, AI commands pass through and cooldown decrements.
+    # (The buffers were cleared on trigger, so they're also refilling.)
     for _ in range(CommandGenerator.BOREDOM_COOLDOWN_FRAMES):
         result = cg.check_and_override_if_bored(
             _ai_forward_response(),
@@ -1109,8 +1126,26 @@ def test_cooldown_blocks_retrigger():
         )
         # No commit should fire while cooldown is active
         assert cg.boredom_state.commit_state is None
-    # After cooldown expires AND buffer is full, a fresh trigger should fire
+    # Cooldown is now exhausted
     assert cg.boredom_state.cooldown_frames == 0
+
+    # Feed triggering signal until the detector re-triggers. Robust to
+    # off-by-one in exact buffer state — we just want to prove that
+    # cooldown doesn't permanently disable the detector.
+    triggered = False
+    for _ in range(CommandGenerator.BOREDOM_WINDOW + 5):
+        cg.check_and_override_if_bored(
+            _ai_forward_response(),
+            _sensors(fl=100, fr=100),
+            override_applied_this_frame=False,
+        )
+        if cg.boredom_state.commit_state is not None:
+            triggered = True
+            break
+    assert triggered, (
+        "After cooldown expires and buffer refills with quiet+stationary "
+        "signal, the detector should re-trigger"
+    )
 ```
 
 Add to `__main__`:
@@ -1137,6 +1172,11 @@ In `server/command_generator.py`, replace the stub from Task 7 with:
         """Advance the commit state machine and emit the forced command.
 
         rotate (frame N) → forward (frame N+1) → None + cooldown engaged
+
+        Records which phase actually executed in
+        `bs.last_executed_commit_phase` so server_control.py can tag the
+        training-data record correctly. (Reading `commit_state` after the
+        call is unreliable — it's already advanced.)
         """
         bs = self.boredom_state
 
@@ -1149,6 +1189,7 @@ In `server/command_generator.py`, replace the stub from Task 7 with:
             parsed.reasoning = f"BOREDOM COMMIT 1/2: rotate-{direction} {self.MAX_ROTATION_SPEED}"
             logger.warning(parsed.reasoning)
             bs.commit_state = 'forward'
+            bs.last_executed_commit_phase = 'rotate'
             return parsed
 
         if bs.commit_state == 'forward':
@@ -1160,11 +1201,13 @@ In `server/command_generator.py`, replace the stub from Task 7 with:
             bs.commit_state = None
             bs.commit_direction = None
             bs.cooldown_frames = self.BOREDOM_COOLDOWN_FRAMES
+            bs.last_executed_commit_phase = 'forward'
             return parsed
 
         # Unexpected state — clear and yield back to AI
         bs.commit_state = None
         bs.commit_direction = None
+        bs.last_executed_commit_phase = None
         return parsed
 ```
 
@@ -1247,7 +1290,19 @@ Expected: `All boredom detector tests passed!`
 
 This passes because the abort behavior is enforced by the caller, not by `check_and_override_if_bored`. The test documents the contract.
 
-- [ ] **Step 3: Modify `server/server_control.py` override chain**
+- [ ] **Step 3: Remove the existing sanitize call from `parse_response`**
+
+Currently `parse_response` in `server/command_generator.py` (lines ~486-488) sanitizes commands inline:
+
+```python
+        # Sanitize command: cap speeds and durations for safety
+        if command is not None:
+            command = self._sanitize_command(command)
+```
+
+This duplicates the sanitize step in the new override chain. Remove these 3 lines from `parse_response`. The new override chain (Step 4 below) becomes the canonical sanitize point. The `run_goto` path doesn't use `parsed.command` for driving (it follows breadcrumb edges), so this removal is safe.
+
+- [ ] **Step 4: Modify `server/server_control.py` override chain**
 
 In `run_ai_control` (around line 99), find the existing block from line 161 to ~186. Replace it with the new ordered chain. The full replacement starts at `if parsed.command is None:` and goes through the `_sanitize_command` call (currently lines 161-186):
 
@@ -1287,15 +1342,17 @@ In `run_ai_control` (around line 99), find the existing block from line 161 to ~
                     # 1. Boredom — wins over AI + other reflexes when enabled
                     elif self.boredom_enabled:
                         before_bored = parsed.command
-                        # commit_state BEFORE the call tells us what phase fires
-                        phase_before = self.command_generator.boredom_state.commit_state
+                        # Reset the phase marker so we can tell whether this
+                        # call actually executed a commit step (vs. just
+                        # buffer-updating or cooldown-decrementing).
+                        self.command_generator.boredom_state.last_executed_commit_phase = None
                         parsed = self.command_generator.check_and_override_if_bored(
                             parsed, sensor_data, self.last_frame_had_override
                         )
-                        if parsed.command is not before_bored:
-                            # Tag with the phase that JUST executed
-                            tag = phase_before if phase_before else 'trigger'
-                            overrides_applied.append(f"boredom_commit_{tag}")
+                        phase = self.command_generator.boredom_state.last_executed_commit_phase
+                        if phase is not None:
+                            # 'rotate' or 'forward' — set by _execute_commit_step
+                            overrides_applied.append(f"boredom_commit_{phase}")
 
                     # 2 & 3. Blind / stuck reflexes — only if boredom didn't override
                     boredom_fired = any(t.startswith("boredom_commit_")
@@ -1311,18 +1368,28 @@ In `run_ai_control` (around line 99), find the existing block from line 161 to ~
                         if parsed.command is not before_stuck:
                             overrides_applied.append("stuck_escape")
 
-                    # 4. Sanitize (caps speed/duration, applies carpet boost)
+                    # 4. Sanitize (caps speed/duration, applies carpet boost).
+                    # Now the canonical sanitize point — removed from
+                    # parse_response in Step 3 to avoid double application.
                     if parsed.command:
                         before_sanitize = parsed.command
                         parsed.command = self.command_generator._sanitize_command(parsed.command)
                         if parsed.command != before_sanitize:
                             overrides_applied.append("sanitize")
 
-                    # Track for next frame's boredom calculation
-                    self.last_frame_had_override = bool(overrides_applied)
+                    # Track for next frame's boredom calculation. Sanitize is
+                    # mechanical limit enforcement, not a behavioral override —
+                    # if we counted it, every speed-cap event would inflate
+                    # override_rate and the detector would self-trigger.
+                    # Boredom commits also don't count (they ARE the response,
+                    # not a signal of one).
+                    self.last_frame_had_override = any(
+                        t in ("blind_reflex", "stuck_escape")
+                        for t in overrides_applied
+                    )
 ```
 
-- [ ] **Step 4: Initialize the new instance attributes in `ServerController.__init__`**
+- [ ] **Step 5: Initialize the new instance attributes in `ServerController.__init__`**
 
 Modify `__init__` (around lines 37-56):
 
@@ -1353,7 +1420,7 @@ Modify `__init__` (around lines 37-56):
                     f"(manual_mode={manual_mode}, boredom_enabled={boredom_enabled})")
 ```
 
-- [ ] **Step 5: Smoke test — import + instantiate**
+- [ ] **Step 6: Smoke test — import + instantiate**
 
 Run:
 
@@ -1370,20 +1437,27 @@ print('OK')
 
 Expected: `OK`
 
-- [ ] **Step 6: Re-run boredom unit tests to confirm they still pass**
+- [ ] **Step 7: Re-run boredom unit tests to confirm they still pass**
 
 Run: `python tests/test_boredom_detector.py`
 Expected: `All boredom detector tests passed!`
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add server/server_control.py tests/test_boredom_detector.py
+git add server/command_generator.py server/server_control.py tests/test_boredom_detector.py
 git commit -m "Wire boredom detector into server_control override chain
 
 New priority: emergency-stop (<15cm) > boredom commit > blind/stuck
 reflexes > sanitize. Emergency stop aborts in-progress commits and
-engages cooldown. Boredom suppresses blind/stuck while active."
+engages cooldown. Boredom suppresses blind/stuck while active.
+
+Also removes the duplicate sanitize call from parse_response so the
+override chain's step 4 is the canonical sanitize point.
+
+last_frame_had_override only counts blind_reflex and stuck_escape
+(behavioral overrides), not sanitize (mechanical limit) or
+boredom_commit_* (the response, not a signal)."
 ```
 
 ---
