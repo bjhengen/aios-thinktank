@@ -175,20 +175,21 @@ class ServerController:
 
                     # 0. Emergency-stop watchdog — always wins
                     d = sensor_data.to_dict() if sensor_data else {}
+                    fc = d.get('fc') if d.get('fc') is not None else 999
                     fl = d.get('fl') if d.get('fl') is not None else 999
                     fr = d.get('fr') if d.get('fr') is not None else 999
-                    if min(fl, fr) < CommandGenerator.EMERGENCY_STOP_CM:
+                    if min(fc, fl, fr) < CommandGenerator.EMERGENCY_STOP_CM:
                         parsed.command = MotorCommand.stop()
                         parsed.reasoning = (
                             f"EMERGENCY: front <{CommandGenerator.EMERGENCY_STOP_CM}cm "
-                            f"(fl={fl} fr={fr})"
+                            f"(fc={fc} fl={fl} fr={fr})"
                         )
                         overrides_applied.append("emergency_stop")
                         # Abort any in-progress commit
                         bs = self.command_generator.boredom_state
                         if bs.commit_state is not None:
                             logger.warning(
-                                f"BOREDOM ABORTED: emergency stop fl={fl}cm fr={fr}cm"
+                                f"BOREDOM ABORTED: emergency stop fc={fc}cm fl={fl}cm fr={fr}cm"
                             )
                             bs.commit_state = None
                             bs.commit_direction = None
@@ -196,7 +197,6 @@ class ServerController:
 
                     # 1. Boredom — wins over AI + other reflexes when enabled
                     elif self.boredom_enabled:
-                        before_bored = parsed.command
                         # Reset the phase marker so we can tell whether this
                         # call actually executed a commit step (vs. just
                         # buffer-updating or cooldown-decrementing).
@@ -430,6 +430,8 @@ class ServerController:
                     known_locations=known_locs)
 
                 response = self.vision_model.process_frame(frame_data, prompt)
+                # Only parsed.location is consumed below; parsed.command is
+                # discarded (sanitize lives in run_ai_control's override chain).
                 parsed = self.command_generator.parse_response(response)
 
                 if not parsed.location or parsed.location == "unknown":
