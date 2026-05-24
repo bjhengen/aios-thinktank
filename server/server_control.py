@@ -419,6 +419,69 @@ class ServerController:
                 conn.send_command(MotorCommand.stop())
 
 
+    def run_review_map(self) -> None:
+        """Interactive map curation: rename, delete, or keep each node.
+
+        No network, no AI, no Pi connection. Operates purely on the
+        local map_data.json file.
+
+        Note: only nodes that exist in map_data.json appear here. Seed
+        names from config.SEED_LOCATIONS that the car never identified
+        won't show up (they only enter the map when the AI promotes
+        them via a LOCATION: response).
+        """
+        if not self.map_manager:
+            logger.error("Mapping not enabled")
+            return
+
+        self.map_manager.load()
+        if not self.map_manager.nodes:
+            print("Map is empty — nothing to review.")
+            return
+
+        print(f"\n{len(self.map_manager.nodes)} node(s), "
+              f"{len(self.map_manager.edges)} edge(s)\n")
+
+        for node_id in list(self.map_manager.nodes.keys()):
+            node = self.map_manager.nodes[node_id]
+            print(f"--- {node_id} ---")
+            print(f"  label:        {node.label}")
+            print(f"  visit_count:  {node.visit_count}")
+            print(f"  floor_type:   {node.floor_type}")
+            print(f"  last_visited: {node.last_visited}")
+            print(f"  landmarks:    {node.landmarks}")
+            neighbors = self.map_manager.get_neighbors(node_id)
+            print(f"  neighbors:    {neighbors}")
+
+            while True:
+                choice = input("(k)eep / (r)ename / (d)elete: ").strip().lower()
+                if choice in ("k", "keep", ""):
+                    break
+                if choice in ("r", "rename"):
+                    new_id = input("  new name: ").strip().lower()
+                    if not is_valid_location_name(new_id):
+                        print(f"  '{new_id}' is not a valid name. Try again.")
+                        continue
+                    if new_id in self.map_manager.nodes:
+                        print(f"  '{new_id}' already exists. Try again.")
+                        continue
+                    self.map_manager.rename_node(node_id, new_id)
+                    print(f"  renamed → {new_id}")
+                    break
+                if choice in ("d", "delete"):
+                    confirm = input(f"  delete '{node_id}'? (y/N): ").strip().lower()
+                    if confirm == "y":
+                        self.map_manager.delete_node(node_id)
+                        print(f"  deleted {node_id}")
+                    break
+                print("  Choose k, r, or d.")
+            print()
+
+        self.map_manager.save()
+        print(f"Saved: {len(self.map_manager.nodes)} node(s), "
+              f"{len(self.map_manager.edges)} edge(s)")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -466,14 +529,25 @@ def main():
         help='Navigate back to starting location (alias for --goto office)'
     )
 
+    parser.add_argument(
+        '--review-map',
+        action='store_true',
+        help='Interactive map review: rename, delete, or keep each node'
+    )
+
     args = parser.parse_args()
 
     # Update config
     config.port = args.port
     config.host = args.host
 
-    # Create controller
-    controller = ServerController(manual_mode=args.manual)
+    # Create controller (skip model load for --review-map)
+    if args.review_map:
+        controller = ServerController(manual_mode=True)
+        # Force-enable map_manager even though manual_mode is True
+        controller.map_manager = MapManager(config.map_file)
+    else:
+        controller = ServerController(manual_mode=args.manual)
 
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig, frame):
@@ -485,6 +559,11 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
+        # --review-map is a pure file op — skip network/model startup
+        if args.review_map:
+            controller.run_review_map()
+            return
+
         # Start server
         controller.start()
 
