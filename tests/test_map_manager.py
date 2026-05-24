@@ -171,6 +171,41 @@ def test_reverse_breadcrumb():
     assert reversed_crumbs[1]["right_dir"] == 0  # was 1
 
 
+# ---------------------------------------------------------------------------
+# Task 5: Seeded known_locations
+# ---------------------------------------------------------------------------
+
+def test_known_locations_includes_seeds_when_no_nodes():
+    from server import config as server_config
+    mm = MapManager()
+    known = mm.get_known_locations()
+    for seed in server_config.SEED_LOCATIONS:
+        assert seed in known, f"seed '{seed}' missing from known_locations"
+
+
+def test_known_locations_observed_first_then_seeds():
+    from server import config as server_config
+    mm = MapManager()
+    mm.add_node("garage", "Garage", [], "concrete")
+    known = mm.get_known_locations()
+    # Observed nodes come first
+    assert known[0] == "garage"
+    # Seeds follow (any order among seeds is fine)
+    seed_portion = known[1:]
+    for seed in server_config.SEED_LOCATIONS:
+        assert seed in seed_portion
+
+
+def test_known_locations_deduplicates_observed_and_seeds():
+    from server import config as server_config
+    mm = MapManager()
+    # 'office' is in SEED_LOCATIONS; if we observe it, it should appear once
+    assert "office" in server_config.SEED_LOCATIONS
+    mm.add_node("office", "Office", [], "tile")
+    known = mm.get_known_locations()
+    assert known.count("office") == 1
+
+
 if __name__ == "__main__":
     test_map_node_creation()
     test_map_edge_creation()
@@ -185,4 +220,7 @@ if __name__ == "__main__":
     test_get_path_multi_hop()
     test_get_path_no_route()
     test_reverse_breadcrumb()
+    test_known_locations_includes_seeds_when_no_nodes()
+    test_known_locations_observed_first_then_seeds()
+    test_known_locations_deduplicates_observed_and_seeds()
     print("All map manager tests passed!")

@@ -202,5 +202,9 @@ class MapManager:
         return reversed_crumbs
 
     def get_known_locations(self) -> List[str]:
-        """Get list of all known node IDs."""
-        return list(self.nodes.keys())
+        """Observed node IDs first, then seed candidates not yet visited."""
+        from server import config as server_config
+        observed = list(self.nodes.keys())
+        observed_set = set(observed)
+        seeds = [s for s in server_config.SEED_LOCATIONS if s not in observed_set]
+        return observed + seeds

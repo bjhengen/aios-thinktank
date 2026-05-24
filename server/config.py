@@ -50,3 +50,12 @@ class ServerConfig:
 
 # Global config instance
 config = ServerConfig()
+
+# Seed vocabulary for the map. These appear in the AI prompt's KNOWN LOCATIONS
+# list so the model has plausible room names to choose from. They are NOT
+# pre-created as MapNodes — nodes are created only when the model identifies
+# a room during a drive.
+SEED_LOCATIONS = [
+    "office", "hallway", "living", "kitchen",
+    "dining", "bedroom", "bathroom",
+]
