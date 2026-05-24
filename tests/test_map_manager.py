@@ -188,12 +188,16 @@ def test_known_locations_observed_first_then_seeds():
     mm = MapManager()
     mm.add_node("garage", "Garage", [], "concrete")
     known = mm.get_known_locations()
-    # Observed nodes come first
+    # Relies on dict insertion order (CPython 3.7+) — single observed node
+    # added first will appear first in the merged result.
     assert known[0] == "garage"
     # Seeds follow (any order among seeds is fine)
     seed_portion = known[1:]
     for seed in server_config.SEED_LOCATIONS:
         assert seed in seed_portion
+    assert len(known) == 1 + len(server_config.SEED_LOCATIONS), (
+        f"expected {1 + len(server_config.SEED_LOCATIONS)} entries, got {len(known)}"
+    )
 
 
 def test_known_locations_deduplicates_observed_and_seeds():
