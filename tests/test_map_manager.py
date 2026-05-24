@@ -271,6 +271,27 @@ def test_delete_node_missing_is_noop():
     mm.delete_node("nonexistent")  # should not raise
 
 
+def test_rename_node_self_rename_is_noop():
+    mm = MapManager()
+    mm.add_node("kitchen", "Kitchen", [], "tile")
+    mm.rename_node("kitchen", "kitchen")  # should not raise, should not double-anything
+    assert mm.get_node("kitchen") is not None
+    assert mm.get_node("kitchen").visit_count == 1  # unchanged
+
+
+def test_rename_node_collision_does_not_overwrite():
+    mm = MapManager()
+    mm.add_node("a", "A", [], "tile")
+    mm.add_node("b", "B", [], "tile")
+    crumbs = [{"left_speed": 190, "right_speed": 190,
+               "left_dir": 1, "right_dir": 1, "duration_ms": 1000}]
+    mm.add_edge("a", "b", crumbs)
+    mm.rename_node("a", "b")  # collision — should NOT overwrite 'b'
+    assert mm.get_node("a") is not None, "original 'a' should still exist"
+    assert mm.get_node("b") is not None, "original 'b' should still exist"
+    assert mm.get_node("b").label == "B"  # unchanged
+
+
 if __name__ == "__main__":
     test_map_node_creation()
     test_map_edge_creation()
@@ -291,6 +312,8 @@ if __name__ == "__main__":
     test_rename_node_updates_node_id()
     test_rename_node_updates_edges()
     test_rename_node_missing_is_noop()
+    test_rename_node_self_rename_is_noop()
+    test_rename_node_collision_does_not_overwrite()
     test_delete_node_removes_node_and_edges()
     test_delete_node_missing_is_noop()
     print("All map manager tests passed!")

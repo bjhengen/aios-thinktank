@@ -204,9 +204,18 @@ class MapManager:
     def rename_node(self, old_id: str, new_id: str) -> None:
         """Rename a node and rewrite any edges that reference it.
 
-        No-op if `old_id` is not present.
+        No-op if `old_id` is not present, if `old_id == new_id`, or if
+        `new_id` already exists (the latter would silently drop the
+        existing node).
         """
         if old_id not in self.nodes:
+            return
+        if old_id == new_id:
+            return
+        if new_id in self.nodes:
+            logger.warning(
+                f"rename_node: '{new_id}' already exists, aborting rename of '{old_id}'"
+            )
             return
         node = self.nodes.pop(old_id)
         node.id = new_id
