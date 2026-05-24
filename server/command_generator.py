@@ -408,20 +408,45 @@ class CommandGenerator:
 
     def _execute_commit_step(self, parsed: ParsedResponse,
                               sensor_data: SensorData) -> ParsedResponse:
-        """Stub — replaced with state machine in Task 8."""
+        """Advance the commit state machine and emit the forced command.
+
+        rotate (frame N) → forward (frame N+1) → None + cooldown engaged
+
+        Records which phase actually executed in
+        `bs.last_executed_commit_phase` so server_control.py can tag the
+        training-data record correctly. (Reading `commit_state` after the
+        call is unreliable — it's already advanced.)
+        """
         bs = self.boredom_state
+
         if bs.commit_state == 'rotate':
             direction = bs.commit_direction or 'left'
             if direction == 'left':
                 parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
             else:
                 parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
-            parsed.reasoning = f"BOREDOM COMMIT 1/2: rotate-{direction}"
+            parsed.reasoning = f"BOREDOM COMMIT 1/2: rotate-{direction} {self.MAX_ROTATION_SPEED}"
+            logger.warning(parsed.reasoning)
             bs.commit_state = 'forward'
+            bs.last_executed_commit_phase = 'rotate'
             return parsed
-        # 'forward' or any other state — full handling in Task 8
+
+        if bs.commit_state == 'forward':
+            parsed.command = MotorCommand.forward(self.CARPET_SPEED,
+                                                   self.BOREDOM_COMMIT_FORWARD_MS)
+            parsed.reasoning = (f"BOREDOM COMMIT 2/2: forward {self.CARPET_SPEED} "
+                                f"{self.BOREDOM_COMMIT_FORWARD_MS}ms")
+            logger.warning(parsed.reasoning)
+            bs.commit_state = None
+            bs.commit_direction = None
+            bs.cooldown_frames = self.BOREDOM_COOLDOWN_FRAMES
+            bs.last_executed_commit_phase = 'forward'
+            return parsed
+
+        # Unexpected state — clear and yield back to AI
         bs.commit_state = None
-        bs.cooldown_frames = self.BOREDOM_COOLDOWN_FRAMES
+        bs.commit_direction = None
+        bs.last_executed_commit_phase = None
         return parsed
 
     def _format_sensor_section(self, sensor_data: SensorData) -> str:

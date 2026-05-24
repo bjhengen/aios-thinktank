@@ -131,9 +131,124 @@ def test_no_trigger_when_both_signals_quiet():
     assert result.command == parsed.command
 
 
+# ---------------------------------------------------------------------------
+# Task 8: Commit sequence — rotate → forward → cooldown
+# ---------------------------------------------------------------------------
+
+def _fill_buffer_until_trigger(cg):
+    """Helper: fill buffer with quiet+stationary signal to force a trigger.
+    Returns the trigger-frame result.
+
+    With pre-append window-full semantics, the buffer needs WINDOW+1 calls
+    total: the first WINDOW fills it, then the (WINDOW+1)th sees a full
+    buffer and evaluates → triggers.
+    """
+    for _ in range(CommandGenerator.BOREDOM_WINDOW):
+        cg.check_and_override_if_bored(
+            _ai_forward_response(),
+            _sensors(fl=100, fr=100),
+            override_applied_this_frame=False,
+        )
+    return cg.check_and_override_if_bored(
+        _ai_forward_response(),
+        _sensors(fl=100, fr=100),
+        override_applied_this_frame=False,
+    )
+
+
+def test_commit_frame1_is_rotate():
+    cg = CommandGenerator()
+    result = _fill_buffer_until_trigger(cg)
+    # Frame 1 (trigger frame): rotate command emitted, state advances
+    assert cg.boredom_state.commit_state == 'forward'  # advanced past 'rotate'
+    cmd = result.command
+    assert cmd.left_dir != cmd.right_dir
+    assert cmd.left_dir != Direction.STOP and cmd.right_dir != Direction.STOP
+    assert cmd.left_speed == CommandGenerator.MAX_ROTATION_SPEED
+
+
+def test_commit_frame2_is_forward():
+    cg = CommandGenerator()
+    _fill_buffer_until_trigger(cg)
+    # Frame 2: forward
+    result = cg.check_and_override_if_bored(
+        _ai_forward_response(),
+        _sensors(fl=100, fr=100),
+        override_applied_this_frame=False,
+    )
+    cmd = result.command
+    assert cmd.left_dir == Direction.FORWARD
+    assert cmd.right_dir == Direction.FORWARD
+    assert cmd.left_speed == CommandGenerator.CARPET_SPEED
+    assert cmd.duration_ms == CommandGenerator.BOREDOM_COMMIT_FORWARD_MS
+    assert cg.boredom_state.commit_state is None
+    # Cooldown engaged
+    assert cg.boredom_state.cooldown_frames == CommandGenerator.BOREDOM_COOLDOWN_FRAMES
+
+
+def test_commit_frame3_is_ai_command():
+    cg = CommandGenerator()
+    _fill_buffer_until_trigger(cg)
+    # Drain rotate + forward frames
+    cg.check_and_override_if_bored(_ai_forward_response(),
+                                    _sensors(fl=100, fr=100),
+                                    override_applied_this_frame=False)
+    # Frame 3: should pass through AI command (cooldown active but commit done)
+    ai = _ai_forward_response()
+    result = cg.check_and_override_if_bored(
+        ai, _sensors(fl=100, fr=100),
+        override_applied_this_frame=False,
+    )
+    assert result.command == ai.command
+    assert cg.boredom_state.cooldown_frames == CommandGenerator.BOREDOM_COOLDOWN_FRAMES - 1
+
+
+def test_cooldown_blocks_retrigger():
+    cg = CommandGenerator()
+    _fill_buffer_until_trigger(cg)
+    # Drain rotate + forward
+    cg.check_and_override_if_bored(_ai_forward_response(),
+                                    _sensors(fl=100, fr=100),
+                                    override_applied_this_frame=False)
+    # During cooldown, AI commands pass through and cooldown decrements.
+    # (The buffers were cleared on trigger, so they're also refilling.)
+    for _ in range(CommandGenerator.BOREDOM_COOLDOWN_FRAMES):
+        result = cg.check_and_override_if_bored(
+            _ai_forward_response(),
+            _sensors(fl=100, fr=100),
+            override_applied_this_frame=True,
+        )
+        # No commit should fire while cooldown is active
+        assert cg.boredom_state.commit_state is None
+    # Cooldown is now exhausted
+    assert cg.boredom_state.cooldown_frames == 0
+
+    # Feed triggering signal until the detector re-triggers. Robust to
+    # off-by-one in exact buffer state — we just want to prove that
+    # cooldown doesn't permanently disable the detector.
+    triggered = False
+    for _ in range(CommandGenerator.BOREDOM_WINDOW + 5):
+        cg.check_and_override_if_bored(
+            _ai_forward_response(),
+            _sensors(fl=100, fr=100),
+            override_applied_this_frame=False,
+        )
+        if cg.boredom_state.commit_state is not None:
+            triggered = True
+            break
+    assert triggered, (
+        "After cooldown expires and buffer refills with quiet+stationary "
+        "signal, the detector should re-trigger"
+    )
+
+
 if __name__ == "__main__":
     test_no_trigger_when_buffer_not_full()
     test_trigger_on_high_override_rate()
     test_trigger_on_low_sensor_delta()
     test_no_trigger_when_both_signals_quiet()
-    print("Boredom detector tests passed (Task 7)")
+    test_commit_frame1_is_rotate()
+    test_commit_frame2_is_forward()
+    test_commit_frame3_is_ai_command()
+    test_cooldown_blocks_retrigger()
+    print("All boredom detector tests passed!")
