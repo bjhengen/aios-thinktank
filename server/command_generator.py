@@ -648,10 +648,6 @@ CALIBRATION:
                 except Exception as e:
                     logger.error(f"Fallback parsing failed: {e}")
 
-        # Sanitize command: cap speeds and durations for safety
-        if command is not None:
-            command = self._sanitize_command(command)
-
         return ParsedResponse(
             command=command,
             observation=observation,

@@ -242,6 +242,32 @@ def test_cooldown_blocks_retrigger():
     )
 
 
+# ---------------------------------------------------------------------------
+# Task 9: Emergency-stop abort
+# ---------------------------------------------------------------------------
+
+def test_emergency_stop_during_commit_clears_state():
+    """Simulate the server_control.py contract: when front sensors read
+    below EMERGENCY_STOP_CM, the caller is responsible for clearing the
+    commit state and engaging cooldown."""
+    cg = CommandGenerator()
+    _fill_buffer_until_trigger(cg)
+    # Mid-commit (state is now 'forward'). Caller detects emergency.
+    cg.boredom_state.commit_state = None
+    cg.boredom_state.commit_direction = None
+    cg.boredom_state.cooldown_frames = CommandGenerator.BOREDOM_COOLDOWN_FRAMES
+    # Subsequent boredom call should NOT execute the forward step;
+    # buffer-update happens and cooldown decrements
+    parsed = _ai_forward_response()
+    result = cg.check_and_override_if_bored(
+        parsed, _sensors(fl=10, fr=10),
+        override_applied_this_frame=True,
+    )
+    # Command unchanged (AI command passes through), cooldown decremented
+    assert result.command == parsed.command
+    assert cg.boredom_state.cooldown_frames == CommandGenerator.BOREDOM_COOLDOWN_FRAMES - 1
+
+
 if __name__ == "__main__":
     test_no_trigger_when_buffer_not_full()
     test_trigger_on_high_override_rate()
@@ -251,4 +277,5 @@ if __name__ == "__main__":
     test_commit_frame2_is_forward()
     test_commit_frame3_is_ai_command()
     test_cooldown_blocks_retrigger()
+    test_emergency_stop_during_commit_clears_state()
     print("All boredom detector tests passed!")

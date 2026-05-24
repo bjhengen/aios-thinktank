@@ -34,14 +34,17 @@ class ServerController:
     Main server controller that orchestrates all components.
     """
 
-    def __init__(self, manual_mode: bool = False):
+    def __init__(self, manual_mode: bool = False, boredom_enabled: bool = False):
         """
         Initialize server controller.
 
         Args:
             manual_mode: If True, accept keyboard commands instead of AI
+            boredom_enabled: If True, run the boredom detector in AI mode
         """
         self.manual_mode = manual_mode
+        self.boredom_enabled = boredom_enabled
+        self.last_frame_had_override = False
         self.vision_model = None if manual_mode else VisionModel()
         self.network_server = NetworkServer(config.host, config.port)
         self.command_generator = CommandGenerator()
@@ -53,7 +56,8 @@ class ServerController:
 
         self.training_logger = None if manual_mode else TrainingLogger()
 
-        logger.info(f"ServerController initialized (manual_mode={manual_mode})")
+        logger.info(f"ServerController initialized "
+                    f"(manual_mode={manual_mode}, boredom_enabled={boredom_enabled})")
 
     def start(self) -> None:
         """Start the server and all components."""
@@ -167,23 +171,77 @@ class ServerController:
                     command_before_overrides = parsed.command
                     overrides_applied = []
 
-                    # Check for blind/collision reflex override
-                    parsed = self.command_generator.check_and_override_if_blind(parsed)
-                    if parsed.command is not command_before_overrides:
-                        overrides_applied.append("blind_reflex")
+                    # ---- New override chain ----
 
-                    # Stuck-streak escape: force rotate when model fixates on BWD/STOP
-                    before_stuck = parsed.command
-                    parsed = self.command_generator.check_and_override_if_stuck(parsed, sensor_data)
-                    if parsed.command is not before_stuck:
-                        overrides_applied.append("stuck_escape")
+                    # 0. Emergency-stop watchdog — always wins
+                    d = sensor_data.to_dict() if sensor_data else {}
+                    fl = d.get('fl') if d.get('fl') is not None else 999
+                    fr = d.get('fr') if d.get('fr') is not None else 999
+                    if min(fl, fr) < CommandGenerator.EMERGENCY_STOP_CM:
+                        parsed.command = MotorCommand.stop()
+                        parsed.reasoning = (
+                            f"EMERGENCY: front <{CommandGenerator.EMERGENCY_STOP_CM}cm "
+                            f"(fl={fl} fr={fr})"
+                        )
+                        overrides_applied.append("emergency_stop")
+                        # Abort any in-progress commit
+                        bs = self.command_generator.boredom_state
+                        if bs.commit_state is not None:
+                            logger.warning(
+                                f"BOREDOM ABORTED: emergency stop fl={fl}cm fr={fr}cm"
+                            )
+                            bs.commit_state = None
+                            bs.commit_direction = None
+                            bs.cooldown_frames = CommandGenerator.BOREDOM_COOLDOWN_FRAMES
 
-                    # Enforce speed/duration limits (catches reflex overrides too)
+                    # 1. Boredom — wins over AI + other reflexes when enabled
+                    elif self.boredom_enabled:
+                        before_bored = parsed.command
+                        # Reset the phase marker so we can tell whether this
+                        # call actually executed a commit step (vs. just
+                        # buffer-updating or cooldown-decrementing).
+                        self.command_generator.boredom_state.last_executed_commit_phase = None
+                        parsed = self.command_generator.check_and_override_if_bored(
+                            parsed, sensor_data, self.last_frame_had_override
+                        )
+                        phase = self.command_generator.boredom_state.last_executed_commit_phase
+                        if phase is not None:
+                            # 'rotate' or 'forward' — set by _execute_commit_step
+                            overrides_applied.append(f"boredom_commit_{phase}")
+
+                    # 2 & 3. Blind / stuck reflexes — only if boredom didn't override
+                    boredom_fired = any(t.startswith("boredom_commit_")
+                                         for t in overrides_applied)
+                    if not boredom_fired and "emergency_stop" not in overrides_applied:
+                        before_blind = parsed.command
+                        parsed = self.command_generator.check_and_override_if_blind(parsed)
+                        if parsed.command is not before_blind:
+                            overrides_applied.append("blind_reflex")
+
+                        before_stuck = parsed.command
+                        parsed = self.command_generator.check_and_override_if_stuck(parsed, sensor_data)
+                        if parsed.command is not before_stuck:
+                            overrides_applied.append("stuck_escape")
+
+                    # 4. Sanitize (caps speed/duration, applies carpet boost).
+                    # Now the canonical sanitize point — removed from
+                    # parse_response in Step 3 to avoid double application.
                     if parsed.command:
                         before_sanitize = parsed.command
                         parsed.command = self.command_generator._sanitize_command(parsed.command)
                         if parsed.command != before_sanitize:
                             overrides_applied.append("sanitize")
+
+                    # Track for next frame's boredom calculation. Sanitize is
+                    # mechanical limit enforcement, not a behavioral override —
+                    # if we counted it, every speed-cap event would inflate
+                    # override_rate and the detector would self-trigger.
+                    # Boredom commits also don't count (they ARE the response,
+                    # not a signal of one).
+                    self.last_frame_had_override = any(
+                        t in ("blind_reflex", "stuck_escape")
+                        for t in overrides_applied
+                    )
 
                     # Persist training record (fire-and-forget, never blocks control loop)
                     if self.training_logger:
