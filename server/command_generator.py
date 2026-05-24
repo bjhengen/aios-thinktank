@@ -9,7 +9,8 @@ This module handles:
 
 import re
 from typing import List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections import deque
 
 from shared.protocol import MotorCommand, Direction, SensorData
 from shared.utils import setup_logging
@@ -48,6 +49,19 @@ class ControlState:
     last_escape_rotate_dir: Optional[str] = None  # 'left'|'right' — alternate to break loops
     rotate_streak: int = 0  # Consecutive same-direction rotations while front still blocked
     last_rotate_dir: Optional[str] = None  # 'left'|'right' — track what the AI last rotated
+
+
+@dataclass
+class BoredomState:
+    """Rolling-window state for the boredom detector + commit state machine."""
+    recent_overrides: deque = field(default_factory=lambda: deque(maxlen=20))
+    recent_front_distances: deque = field(default_factory=lambda: deque(maxlen=20))
+    commit_state: Optional[str] = None       # None | 'rotate' | 'forward'
+    commit_direction: Optional[str] = None   # 'left' | 'right'
+    cooldown_frames: int = 0
+    last_executed_commit_phase: Optional[str] = None  # 'rotate' | 'forward' | None
+                                                       # set by _execute_commit_step
+                                                       # so the caller can tag training data
 
 
 # Keywords indicating the camera can't see properly
@@ -93,6 +107,10 @@ class CommandGenerator:
     def __init__(self):
         """Initialize command generator."""
         self.state = ControlState()
+        self.boredom_state = BoredomState(
+            recent_overrides=deque(maxlen=self.BOREDOM_WINDOW),
+            recent_front_distances=deque(maxlen=self.BOREDOM_WINDOW),
+        )
         logger.info("CommandGenerator initialized")
 
     # Safety limits enforced in code (not prompt-dependent)
@@ -102,6 +120,14 @@ class CommandGenerator:
     TILE_SPEED = 190
     CARPET_SPEED = 235
     CARPET_KEYWORDS = ["carpet", "rug", "shag", "plush"]
+
+    # Boredom detector
+    BOREDOM_WINDOW = 20                # ~1 min at ~3s/frame
+    OVERRIDE_RATE_THRESHOLD = 0.5      # >=50% of window had any reflex override
+    SENSOR_DELTA_THRESHOLD = 30        # total |FL+FR avg| change in cm over window
+    BOREDOM_COOLDOWN_FRAMES = 10       # suppression after a commit completes
+    BOREDOM_COMMIT_FORWARD_MS = 2000
+    EMERGENCY_STOP_CM = 15             # front sensor threshold for absolute STOP
 
     def _is_rotation(self, command: MotorCommand) -> bool:
         """Check if a command is a rotation (opposite directions)."""
