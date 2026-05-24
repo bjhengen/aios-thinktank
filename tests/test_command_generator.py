@@ -65,6 +65,27 @@ def test_prompt_without_known_locations_omits_section():
     assert "KNOWN LOCATIONS:" not in prompt
 
 
+def test_validate_location_accepts_simple_names():
+    from server.command_generator import is_valid_location_name
+    for name in ["office", "kitchen", "bedroom2", "guest_room", "a"]:
+        assert is_valid_location_name(name), f"should accept {name!r}"
+
+
+def test_validate_location_rejects_garbage():
+    from server.command_generator import is_valid_location_name
+    bad = [
+        "",
+        "Office",                # uppercase
+        "1room",                 # starts with digit
+        "room with spaces",
+        "a-b",                   # hyphen
+        "room!",                 # punctuation
+        "x" * 20,                # too long (>16 chars)
+    ]
+    for name in bad:
+        assert not is_valid_location_name(name), f"should reject {name!r}"
+
+
 if __name__ == "__main__":
     test_parse_location_from_response()
     test_parse_location_unknown()
@@ -72,4 +93,6 @@ if __name__ == "__main__":
     test_prompt_includes_known_locations()
     test_prompt_allows_proposing_new_location_name()
     test_prompt_without_known_locations_omits_section()
+    test_validate_location_accepts_simple_names()
+    test_validate_location_rejects_garbage()
     print("All command generator tests passed!")

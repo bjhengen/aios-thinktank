@@ -18,6 +18,19 @@ from shared.utils import setup_logging
 logger = setup_logging(__name__)
 
 
+_LOCATION_NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,15}$')
+
+
+def is_valid_location_name(name: str) -> bool:
+    """True iff `name` is a safe location identifier for the map.
+
+    Rules: lowercase, starts with a letter, only [a-z0-9_], 1-16 chars total.
+    Used to reject hallucinated multi-word or punctuated names before they
+    pollute the map.
+    """
+    return bool(name) and bool(_LOCATION_NAME_RE.match(name))
+
+
 @dataclass
 class ControlState:
     """Current control state and context."""

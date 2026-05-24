@@ -18,7 +18,7 @@ import argparse
 
 from server.vision_model import VisionModel
 from server.network_server import NetworkServer
-from server.command_generator import CommandGenerator, SimpleCommandParser
+from server.command_generator import CommandGenerator, SimpleCommandParser, is_valid_location_name
 from server.map_manager import MapManager
 from server.training_logger import TrainingLogger
 from server.config import config
@@ -216,6 +216,15 @@ class ServerController:
 
                     # Map integration
                     if self.map_manager and parsed.location:
+                        # Reject malformed names — fall back to 'unknown'
+                        if (parsed.location != "unknown"
+                                and not is_valid_location_name(parsed.location)):
+                            logger.warning(
+                                f"Invalid location name '{parsed.location}' "
+                                f"— treating as unknown"
+                            )
+                            parsed.location = "unknown"
+
                         if parsed.location == "unknown" and not discovering_room:
                             discovering_room = True
                             logger.info("Unknown location — will ask for room details")
