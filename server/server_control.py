@@ -173,33 +173,12 @@ class ServerController:
 
                     # ---- New override chain ----
 
-                    # 0. Emergency-stop watchdog — always wins
-                    d = sensor_data.to_dict() if sensor_data else {}
-                    fc = d.get('fc') if d.get('fc') is not None else 999
-                    fl = d.get('fl') if d.get('fl') is not None else 999
-                    fr = d.get('fr') if d.get('fr') is not None else 999
-                    if min(fc, fl, fr) < CommandGenerator.EMERGENCY_STOP_CM:
-                        parsed.command = MotorCommand.stop()
-                        parsed.reasoning = (
-                            f"EMERGENCY: front <{CommandGenerator.EMERGENCY_STOP_CM}cm "
-                            f"(fc={fc} fl={fl} fr={fr})"
-                        )
-                        overrides_applied.append("emergency_stop")
-                        # Abort any in-progress commit
-                        bs = self.command_generator.boredom_state
-                        if bs.commit_state is not None:
-                            logger.warning(
-                                f"BOREDOM ABORTED: emergency stop fc={fc}cm fl={fl}cm fr={fr}cm"
-                            )
-                            bs.commit_state = None
-                            bs.commit_direction = None
-                            bs.cooldown_frames = CommandGenerator.BOREDOM_COOLDOWN_FRAMES
-
-                    # 1. Boredom — wins over AI + other reflexes when enabled
-                    elif self.boredom_enabled:
-                        # Reset the phase marker so we can tell whether this
-                        # call actually executed a commit step (vs. just
-                        # buffer-updating or cooldown-decrementing).
+                    # 0. Boredom always runs first so its rolling buffer updates
+                    # even when emergency_stop is firing repeatedly. (Emergency
+                    # stops are the most common kind of rut; the detector needs
+                    # to observe them to break out.) Boredom may emit a commit
+                    # command, which can still be vetoed by emergency below.
+                    if self.boredom_enabled:
                         self.command_generator.boredom_state.last_executed_commit_phase = None
                         parsed = self.command_generator.check_and_override_if_bored(
                             parsed, sensor_data, self.last_frame_had_override
@@ -209,7 +188,39 @@ class ServerController:
                             # 'rotate' or 'forward' — set by _execute_commit_step
                             overrides_applied.append(f"boredom_commit_{phase}")
 
-                    # 2 & 3. Blind / stuck reflexes — only if boredom didn't override
+                    # 1. Emergency-stop watchdog — vetoes FORWARD motion only.
+                    # Backward and rotate pass through so the car can back away
+                    # or turn out of a tight spot.
+                    d = sensor_data.to_dict() if sensor_data else {}
+                    fc = d.get('fc') if d.get('fc') is not None else 999
+                    fl = d.get('fl') if d.get('fl') is not None else 999
+                    fr = d.get('fr') if d.get('fr') is not None else 999
+                    front_close = min(fc, fl, fr) < CommandGenerator.EMERGENCY_STOP_CM
+                    cmd_is_forward = (
+                        parsed.command is not None
+                        and parsed.command.left_dir == Direction.FORWARD
+                        and parsed.command.right_dir == Direction.FORWARD
+                    )
+                    if front_close and cmd_is_forward:
+                        parsed.command = MotorCommand.stop()
+                        parsed.reasoning = (
+                            f"EMERGENCY: front <{CommandGenerator.EMERGENCY_STOP_CM}cm "
+                            f"blocks forward (fc={fc} fl={fl} fr={fr})"
+                        )
+                        overrides_applied.append("emergency_stop")
+                        # Abort any in-progress commit so we don't immediately
+                        # try forward again next frame
+                        bs = self.command_generator.boredom_state
+                        if bs.commit_state is not None:
+                            logger.warning(
+                                f"BOREDOM ABORTED: emergency stop fc={fc}cm fl={fl}cm fr={fr}cm"
+                            )
+                            bs.commit_state = None
+                            bs.commit_direction = None
+                            bs.cooldown_frames = CommandGenerator.BOREDOM_COOLDOWN_FRAMES
+
+                    # 2 & 3. Blind / stuck reflexes — only if neither boredom
+                    # nor emergency already overrode
                     boredom_fired = any(t.startswith("boredom_commit_")
                                          for t in overrides_applied)
                     if not boredom_fired and "emergency_stop" not in overrides_applied:
