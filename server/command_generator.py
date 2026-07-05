@@ -119,6 +119,8 @@ class CommandGenerator:
     MAX_DURATION_MS = 2000     # Cap duration so car re-evaluates frequently
     TILE_SPEED = 190
     CARPET_SPEED = 235
+    MIN_MOVE_SPEED = 200       # Floor: below this the front-heavy chassis stalls from a
+                               # dead stop (motors buzz, no motion) — esp. hard floor / low battery
     CARPET_KEYWORDS = ["carpet", "rug", "shag", "plush"]
 
     # Boredom detector
@@ -156,6 +158,16 @@ class CommandGenerator:
             if right_speed > 0 and right_speed < min_speed:
                 right_speed = min_speed
             logger.debug(f"Carpet boost applied: {left_speed},{right_speed}")
+
+        # Minimum-move floor: any non-zero wheel must clear the stall-torque
+        # threshold, or the motor buzzes without moving (observed live near a
+        # plant at speed 150 — front-heavy chassis, hard floor, battery sag).
+        # Applies to rotation and straight alike; MIN_MOVE_SPEED is below both
+        # caps so this never fights the cap or the carpet boost.
+        if left_speed > 0:
+            left_speed = max(left_speed, self.MIN_MOVE_SPEED)
+        if right_speed > 0:
+            right_speed = max(right_speed, self.MIN_MOVE_SPEED)
 
         if left_speed != command.left_speed or right_speed != command.right_speed:
             logger.debug(f"Speed adjusted: {command.left_speed},{command.right_speed} → {left_speed},{right_speed}")

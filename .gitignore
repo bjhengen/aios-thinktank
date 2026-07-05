@@ -61,3 +61,4 @@ Thumbs.db
 secrets.yaml
 credentials.json
 map_data.json
+map_data.*.json

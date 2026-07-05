@@ -34,7 +34,8 @@ class ServerController:
     Main server controller that orchestrates all components.
     """
 
-    def __init__(self, manual_mode: bool = False, boredom_enabled: bool = False):
+    def __init__(self, manual_mode: bool = False, boredom_enabled: bool = False,
+                 model_name: Optional[str] = None, no_history: bool = False):
         """
         Initialize server controller.
 
@@ -44,8 +45,9 @@ class ServerController:
         """
         self.manual_mode = manual_mode
         self.boredom_enabled = boredom_enabled
+        self.no_history = no_history
         self.last_frame_had_override = False
-        self.vision_model = None if manual_mode else VisionModel()
+        self.vision_model = None if manual_mode else VisionModel(model_name=model_name)
         self.network_server = NetworkServer(config.host, config.port)
         self.command_generator = CommandGenerator()
         self.running = False
@@ -152,11 +154,17 @@ class ServerController:
 
                 # Process frame with AI
                 try:
-                    response = self.vision_model.process_with_history(
-                        frame_data,
-                        prompt,
-                        max_history=3  # Keep last 3 exchanges for context
-                    )
+                    infer_start = time.time()
+                    if self.no_history:
+                        # Single-frame perception — no prior exchanges in context
+                        response = self.vision_model.process_frame(frame_data, prompt)
+                    else:
+                        response = self.vision_model.process_with_history(
+                            frame_data,
+                            prompt,
+                            max_history=3  # Keep last 3 exchanges for context
+                        )
+                    latency_ms = int((time.time() - infer_start) * 1000)
                     logger.info(f"AI Response: {response[:300]}...")  # Log first 300 chars
 
                     # Parse response to get structured output
@@ -262,6 +270,8 @@ class ServerController:
                                 sensor_data=sensor_data,
                                 prompt=prompt,
                                 raw_response=response,
+                                model_name=self.vision_model.model_name,
+                                latency_ms=latency_ms,
                                 parsed_command_before_overrides=command_before_overrides,
                                 final_command=parsed.command,
                                 observation=parsed.observation,
@@ -612,6 +622,19 @@ def main():
         help='Enable boredom-detector reflex (off by default; use for explore drives)'
     )
 
+    parser.add_argument(
+        '--model',
+        type=str,
+        default=config.model_name,
+        help=f'Vision model to drive with, by llama-swap name (default: {config.model_name})'
+    )
+
+    parser.add_argument(
+        '--no-history',
+        action='store_true',
+        help='Send each frame with no conversation history (single-frame perception)'
+    )
+
     args = parser.parse_args()
 
     # Update config
@@ -627,6 +650,8 @@ def main():
         controller = ServerController(
             manual_mode=args.manual,
             boredom_enabled=args.boredom_detector,
+            model_name=args.model,
+            no_history=args.no_history,
         )
 
     # Setup signal handlers for graceful shutdown

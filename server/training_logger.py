@@ -72,7 +72,9 @@ class TrainingLogger:
                   location: str = "",
                   overrides_applied: Optional[list] = None,
                   goal: str = "",
-                  steps_taken: int = 0) -> str:
+                  steps_taken: int = 0,
+                  model_name: str = "",
+                  latency_ms: Optional[int] = None) -> str:
         """
         Write one training record and save the frame JPEG.
 
@@ -89,6 +91,8 @@ class TrainingLogger:
         record = {
             "ts": time.time(),
             "session_id": self.session_id,
+            "model": model_name,
+            "latency_ms": latency_ms,
             "frame_num": self._frame_num,
             "frame_path": os.path.relpath(frame_path, start=self.session_dir),
             "goal": goal,
