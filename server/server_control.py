@@ -233,7 +233,7 @@ class ServerController:
                                          for t in overrides_applied)
                     if not boredom_fired and "emergency_stop" not in overrides_applied:
                         before_blind = parsed.command
-                        parsed = self.command_generator.check_and_override_if_blind(parsed)
+                        parsed = self.command_generator.check_and_override_if_blind(parsed, sensor_data)
                         if parsed.command is not before_blind:
                             overrides_applied.append("blind_reflex")
 

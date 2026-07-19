@@ -103,6 +103,10 @@ class CommandGenerator:
     # Rotation-loop detection: after this many same-direction rotates while front
     # stays blocked, force the opposite rotation to break the circle.
     ROTATE_LOOP_TRIGGER = 2
+    # Minimum front-sensor clearance difference (cm) to treat one side as clearly
+    # "more open" than the other. Within this margin the sides count as
+    # indistinguishable and the escape reflex falls back to alternating direction.
+    FRONT_DIR_MARGIN_CM = 10
 
     def __init__(self):
         """Initialize command generator."""
@@ -190,13 +194,31 @@ class CommandGenerator:
         logger.warning(f"Blind for {self.state.blind_frames} frames - backing up!")
         return MotorCommand.backward(self.BACKUP_SPEED, self.BACKUP_DURATION_MS)
 
-    def _get_turn_command(self) -> MotorCommand:
-        """Get a command to turn after backing up (prefer left turns - more efficient)."""
-        logger.warning("Turning to find new path")
-        # Turn left ~90 degrees at capped rotation speed
-        return MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1250)
+    def _rotate_toward(self, direction: str) -> MotorCommand:
+        """Build an in-place ~90-degree rotation in the given direction, using the
+        per-direction durations tuned for the front-heavy chassis (left rotates
+        faster than right, so it needs less time for the same angle)."""
+        if direction == 'left':
+            return MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
+        return MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
 
-    def check_and_override_if_blind(self, parsed: ParsedResponse) -> ParsedResponse:
+    def _get_turn_command(self, sensor_data: Optional[SensorData] = None) -> MotorCommand:
+        """Turn after backing up, steering toward the more open FRONT side so we
+        rotate AWAY from the wall/obstacle instead of into it. Falls back to
+        alternating direction only when the front sensors can't tell the sides
+        apart (e.g. both blind)."""
+        direction = self._more_open_front_dir(sensor_data)
+        if direction is None:
+            # Sides indistinguishable — alternate so we don't keep turning into the same wall.
+            direction = 'right' if self.state.last_escape_rotate_dir == 'left' else 'left'
+        self.state.last_escape_rotate_dir = direction
+        d = sensor_data.to_dict() if sensor_data else {}
+        logger.warning(f"Turning to find new path: rotate {direction} "
+                       f"(FL={d.get('fl')}cm FR={d.get('fr')}cm)")
+        return self._rotate_toward(direction)
+
+    def check_and_override_if_blind(self, parsed: ParsedResponse,
+                                     sensor_data: Optional[SensorData] = None) -> ParsedResponse:
         """
         Check if we should override the command due to poor visibility.
 
@@ -210,8 +232,8 @@ class CommandGenerator:
             logger.info(f"Blind frame detected ({self.state.blind_frames} consecutive)")
 
             if self.state.just_backed_up:
-                # We backed up but still blind - turn to try new direction
-                parsed.command = self._get_turn_command()
+                # We backed up but still blind - turn toward the open side to try a new direction
+                parsed.command = self._get_turn_command(sensor_data)
                 parsed.reasoning = f"REFLEX: Still blind after backup, turning to find new path"
                 self.state.just_backed_up = False
                 self.state.backup_count += 1
@@ -238,8 +260,31 @@ class CommandGenerator:
         return any(v is not None and v < self.STUCK_FRONT_CM
                    for v in (d.get('fl'), d.get('fr')))
 
+    def _more_open_front_dir(self, sensor_data: Optional[SensorData]) -> Optional[str]:
+        """Direction to rotate toward the more open FRONT side (away from the
+        obstacle). Returns 'left' if the front-left has clearly more clearance,
+        'right' if the front-right does, or None when the two sides are within
+        FRONT_DIR_MARGIN_CM of each other (or both unread) — in which case the
+        caller should fall back to another heuristic."""
+        d = sensor_data.to_dict() if sensor_data else {}
+        fl = d.get('fl')
+        fr = d.get('fr')
+        if fl is None and fr is None:
+            return None
+        fl_v = fl if fl is not None else 999.0
+        fr_v = fr if fr is not None else 999.0
+        if abs(fl_v - fr_v) < self.FRONT_DIR_MARGIN_CM:
+            return None
+        return 'left' if fl_v > fr_v else 'right'
+
     def _pick_escape_dir(self, sensor_data: SensorData) -> str:
-        """Rotate away from the closer rear sensor so the rear doesn't swing into furniture."""
+        """Pick the forced-rotate direction. Prefer turning toward the more open
+        FRONT side (away from the obstacle we're wedged against); only when the
+        front sides are indistinguishable fall back to rotating away from the
+        closer REAR sensor so the rear doesn't swing into furniture."""
+        front = self._more_open_front_dir(sensor_data)
+        if front is not None:
+            return front
         d = sensor_data.to_dict() if sensor_data else {}
         rl = d.get('rl') or 999
         rr = d.get('rr') or 999
@@ -284,17 +329,17 @@ class CommandGenerator:
             self.state.stuck_streak = 0
 
         if self.state.stuck_streak >= self.STUCK_TRIGGER:
-            prev = self.state.last_escape_rotate_dir
-            if prev == 'right':
-                direction = 'left'
-            elif prev == 'left':
-                direction = 'right'
-            else:
-                direction = self._pick_escape_dir(sensor_data)
-            if direction == 'left':
-                parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
-            else:
-                parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
+            # Steer toward the more open FRONT side so we rotate away from the wall.
+            # Only when the sides are indistinguishable fall back to alternating
+            # (to break a loop) or, on the first escape, to rear clearance.
+            direction = self._more_open_front_dir(sensor_data)
+            if direction is None:
+                prev = self.state.last_escape_rotate_dir
+                if prev is not None:
+                    direction = 'left' if prev == 'right' else 'right'
+                else:
+                    direction = self._pick_escape_dir(sensor_data)
+            parsed.command = self._rotate_toward(direction)
             parsed.reasoning = (f"REFLEX: stuck_streak={self.state.stuck_streak}, "
                                 f"forcing rotate-{direction}")
             logger.warning(
@@ -323,10 +368,7 @@ class CommandGenerator:
         if self.state.rotate_streak >= self.ROTATE_LOOP_TRIGGER:
             # Break the circle by rotating the other way
             opposite = 'left' if rot_dir == 'right' else 'right'
-            if opposite == 'left':
-                parsed.command = MotorCommand.rotate_left(self.MAX_ROTATION_SPEED, 1050)
-            else:
-                parsed.command = MotorCommand.rotate_right(self.MAX_ROTATION_SPEED, 1800)
+            parsed.command = self._rotate_toward(opposite)
             parsed.reasoning = (f"REFLEX: rotate_streak={self.state.rotate_streak} "
                                 f"same-direction, reversing to rotate-{opposite}")
             logger.warning(
